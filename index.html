@@ -402,22 +402,52 @@ const ROLL_CFG=[
   {sheet:"점유율1",   tables:[[50,61,["B","C","D","E"]]]},
   {sheet:"점유율2",   tables:[[3,14,["B","C","D"]],[18,29,["B","C"]]]},
 ];
-// 비율 누적: 통계파일용 D가 가리키는 활성 블록을 제자리 갱신 (C ← 지난달 캐시 F, F는 라이브 유지)
-async function rollBiyul(zip,S,label){
+// 마스터(지난달) 일별 stats F열 14개 = 지난달 월평균값 (주간정규일…총처방매수)
+function readPrevStatsF(origIlbyul,cap){ const v=[]; for(let i=0;i<14;i++) v.push(cellVstr(origIlbyul,"F"+(18+cap+i))); return v; }
+// 비율 누적: 매달 "지난달(동결) vs 이번달(라이브)" 전월대비 블록을 아래에 새로 쌓고, 직전 블록 동결 + 통계파일용 포인터 이동
+async function rollBiyul(zip,S,prevStatsF,N,prevLabel,curLabel){
   try{
-    if(!S["통계파일용"]||!S["비율 누적"]) return false;
-    const stat=await zip.file(S["통계파일용"]).async("string");
-    const d3=cellRaw(stat,"D3"); const mref=d3&&d3.match(/!I(\d+)/); if(!mref) return false;
-    const start=parseInt(mref[1],10); const labelRow=start-1;
+    if(!S["비율 누적"]) return false;
     let bx=await zip.file(S["비율 누적"]).async("string");
-    // C열 ← 캐시 F열 값(지난달)
-    for(let r=start;r<start+14;r++){ const fv=cellVstr(bx,"F"+r); if(fv!=null){ const st=styleOf(bx,"C"+r); bx=setCell(bx,"C"+r,`<c r="C${r}"${st}><v>${fv}</v></c>`); } }
-    // 라벨: C ← 기존 F 텍스트, F ← 이번달
-    const fLab=cellRaw(bx,"F"+labelRow);
-    if(fLab) bx=setCell(bx,"C"+labelRow, fLab.replace(/^<c r="F\d+"/,`<c r="C${labelRow}"`));
-    bx=inlineStr(bx,"F"+labelRow,label);
+    // 마지막 '완전' 블록(I열 증감률 수식 있음) = 라벨/스타일 소스
+    let lastComplete=0; for(const m of bx.matchAll(/<c r="I(\d+)"[^>]*><f>\(\(F\d+\/C\d+\)-1\)<\/f>/g)) lastComplete=Math.max(lastComplete,+m[1]);
+    if(!lastComplete) return false;
+    // 마지막 '내용' 행(작성자가 C만 미리 깔아둔 선준비 블록 포함) = 최대 C 숫자값 행
+    let lastContent=lastComplete; for(const m of bx.matchAll(/<c r="C(\d+)"[^>]*><v>[\d.]+<\/v>/g)){ const r=+m[1]; if(r>500&&r>lastContent) lastContent=r; }
+    const labelSrcStart=lastComplete-13, srcHeader=lastComplete-14;   // 라벨/스타일 복제용(완전 블록)
+    const newHeader=lastContent+3, newStart=newHeader+1;              // 새 블록은 모든 내용 아래에
+    const sB=styleOf(bx,"B"+labelSrcStart), sC=styleOf(bx,"C"+labelSrcStart), sE=styleOf(bx,"E"+labelSrcStart),
+          sF=styleOf(bx,"F"+labelSrcStart), sH=styleOf(bx,"H"+labelSrcStart), sI=styleOf(bx,"I"+labelSrcStart),
+          sHC=styleOf(bx,"C"+srcHeader), sHF=styleOf(bx,"F"+srcHeader);
+    // 직전(D3가 가리키는) 블록 F열 동결 → 캐시값 (라이브 추적 중단, 이력 고정)
+    let froze=0;
+    if(S["통계파일용"]){ const stat=await zip.file(S["통계파일용"]).async("string");
+      const d3=cellRaw(stat,"D3"), mref=d3&&d3.match(/!I(\d+)/);
+      if(mref){ const ps=+mref[1];
+        for(let r=ps;r<ps+14;r++){ const raw=cellRaw(bx,"F"+r); if(raw&&raw.includes("<f")){ const fv=cellVstr(bx,"F"+r); const st=styleOf(bx,"F"+r);
+          bx=setCell(bx,"F"+r, fv!=null?`<c r="F${r}"${st}><v>${fv}</v></c>`:`<c r="F${r}"${st}/>`); froze++; } } }
+    }
+    // 새 블록 조립: 헤더 + 14메트릭 (B/E/H 라벨은 소스 복제, C=동결 지난달, F=라이브 이번달, I=증감률)
+    let block=`<row r="${newHeader}">`
+      +`<c r="C${newHeader}"${sHC} t="inlineStr"><is><t>${esc(prevLabel)}</t></is></c>`
+      +`<c r="F${newHeader}"${sHF} t="inlineStr"><is><t>${esc(curLabel)}</t></is></c></row>`;
+    for(let i=0;i<14;i++){ const r=newStart+i, sr=labelSrcStart+i, cv=prevStatsF[i];
+      const bC=(cellRaw(bx,"B"+sr)||`<c r="B${sr}"${sB}/>`).replace(`"B${sr}"`,`"B${r}"`);
+      const eC=(cellRaw(bx,"E"+sr)||`<c r="E${sr}"${sE}/>`).replace(`"E${sr}"`,`"E${r}"`);
+      const hC=(cellRaw(bx,"H"+sr)||`<c r="H${sr}"${sH}/>`).replace(`"H${sr}"`,`"H${r}"`);
+      block+=`<row r="${r}">${bC}`
+        +`<c r="C${r}"${sC}>${cv!=null?`<v>${cv}</v>`:""}</c>${eC}`
+        +`<c r="F${r}"${sF}><f>일별!F${18+N+i}</f></c>${hC}`
+        +`<c r="I${r}"${sI}><f>((F${r}/C${r})-1)</f></c></row>`;
+    }
+    bx=bx.replace("</sheetData>",block+"</sheetData>");
+    bx=bx.replace(/<dimension ref="([A-Z]+\d+:[A-Z]+)(\d+)"\/>/,(mm,a,d)=>`<dimension ref="${a}${Math.max(+d,newStart+13)}"/>`);
     zip.file(S["비율 누적"],bx);
-    return true;
+    // 통계파일용 D3 포인터 → 새 블록 I열
+    if(S["통계파일용"]){ let stat=await zip.file(S["통계파일용"]).async("string");
+      stat=stat.replace(/(<c r="D3"[^>]*><f>'비율 누적'!I)\d+(<\/f>)(<v>[^<]*<\/v>)?/, `$1${newStart}$2`);
+      zip.file(S["통계파일용"],stat); }
+    return {newStart,froze};
   }catch(e){ return false; }
 }
 
@@ -459,10 +489,12 @@ async function generate(){
 
   // 1) 일별 재구성(행 삽입/삭제) + 채우기
   let sheet=await zip.file(S["일별"]).async("string");
+  const origIlbyul=sheet;            // reshape 전 마스터 일별 (지난달 월평균값 읽기용)
   let cap, delta;
   try{ const r=reshapeIlbyul(sheet,y,m,days); sheet=r.xml; cap=r.cap; delta=r.delta; }
   catch(err){ log("· "+esc(err.message),"e"); log("<b>중단됨.</b> 파일을 만들지 않았습니다.","e"); return; }
   zip.file(S["일별"],sheet);
+  const prevStatsF=readPrevStatsF(origIlbyul,cap);  // 지난달 14개 월평균값(동결용)
   log(`· 일별 레이아웃: 마스터 ${cap}일 → ${days.length}일 (행 ${delta>0?"+"+delta:delta}${delta===0?" 변동없음":" 재배치"})`,"s");
 
   // 1-b) 마스터와 대상월 일수가 다르면, 다른 시트·차트의 모든 '일별!' 참조를 delta만큼 이동
@@ -496,9 +528,10 @@ async function generate(){
     for(const [t,b,vc] of cfg.tables) sx=rollTable(sx,t,b,vc,monthLabel);
     zip.file(S[cfg.sheet],sx); rolled++;
   }
-  const biyul=await rollBiyul(zip,S,monthLabel);
+  const prevM = m===1?12:m-1;
+  const biyul=await rollBiyul(zip,S,prevStatsF,days.length,`${prevM}월`,`${m}월`);
   await updateMonthLabels(zip,S,y,m);
-  log(`· history 롤링: 월평균추이·점유율1·점유율2 ${rolled}시트 + 전월대비(비율누적) ${biyul?"갱신":"건너뜀"} + 월 제목 갱신`,"s");
+  log(`· history 롤링: 월평균추이·점유율1·점유율2 ${rolled}시트 + 전월대비(비율누적) ${biyul?`새 블록 추가(${prevM}월→${m}월), 직전 ${biyul.froze}칸 동결`:"건너뜀"} + 월 제목 갱신`,"s");
 
   // 3) 열 때 자동 재계산
   let wbx=await zip.file("xl/workbook.xml").async("string");
