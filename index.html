@@ -260,7 +260,9 @@ function buildMonth(y,m){
     v["Y"]=countBy("마약","집계일자",key);
     v["Z"]=0;
     if(nw.has(d)){ v["E"]=0; v["J"]=0; } // 비근무일: 외래 연동 09시·15시 자투리 0 처리
-    days.push({d,weekday:weekday(y,m,d),serial:serial(y,m,d),v});
+    const wdn=new Date(Date.UTC(y,m-1,d)).getUTCDay(); // 0=일..6=토
+    const cat = wdn===6 ? "sat" : ((wdn===0||nw.has(d)) ? "sun" : "wd"); // 토=파랑, 일·공휴일=빨강, 그외 검정
+    days.push({d,weekday:weekday(y,m,d),serial:serial(y,m,d),v,cat});
   }
   return days;
 }
@@ -273,20 +275,47 @@ function setCell(xml,coord,inner){ // inner: full <c ...>...</c> 문자열
   const re=new RegExp(`<c r="${coord}"(?:[^>]*?/>|[^>]*?>(?:(?!</c>).)*?</c>)`);
   return re.test(xml)? xml.replace(re,inner) : xml;
 }
-function num(xml,coord,val){ return setCell(xml,coord,`<c r="${coord}"${styleOf(xml,coord)}><v>${val}</v></c>`); }
-function inlineStr(xml,coord,txt){ return setCell(xml,coord,`<c r="${coord}"${styleOf(xml,coord)} t="inlineStr"><is><t>${esc(txt)}</t></is></c>`); }
+function num(xml,coord,val,s){ const st=s?` s="${s}"`:styleOf(xml,coord); return setCell(xml,coord,`<c r="${coord}"${st}><v>${val}</v></c>`); }
+function inlineStr(xml,coord,txt,s){ const st=s?` s="${s}"`:styleOf(xml,coord); return setCell(xml,coord,`<c r="${coord}"${st} t="inlineStr"><is><t>${esc(txt)}</t></is></c>`); }
 function blank(xml,coord){ return setCell(xml,coord,`<c r="${coord}"${styleOf(xml,coord)}/>`); }
+function styleAttr(xml,coord){ const m=cellRaw(xml,coord); if(!m)return null; const s=m.match(/ s="(\d+)"/); return s?s[1]:null; }
+function wdOfSerial(ser){ return new Date(Date.UTC(1899,11,30)+ser*86400000).getUTCDay(); } // 0=일..6=토
+// 마스터에서 토/일/평일 대표행의 색 스타일 수확 (요일·날짜 셀 = ab, 값 셀 = val)
+function harvestColors(xml,cap){
+  const ab={},val={};
+  for(let i=0;i<cap;i++){ const r=FIRST_ROW+i, v=cellVstr(xml,"B"+r), ser=v!=null?Number(v):NaN; if(isNaN(ser))continue;
+    const wd=wdOfSerial(ser);
+    if(wd===6&&!ab.sat){ ab.sat=styleAttr(xml,"A"+r); val.sat=styleAttr(xml,"C"+r); }
+    else if(wd===0&&!ab.sun){ ab.sun=styleAttr(xml,"A"+r); val.sun=styleAttr(xml,"C"+r); }
+  }
+  for(let i=0;i<cap;i++){ const r=FIRST_ROW+i, v=cellVstr(xml,"B"+r), ser=v!=null?Number(v):NaN; if(isNaN(ser))continue;
+    const wd=wdOfSerial(ser), aS=styleAttr(xml,"A"+r);
+    if(wd>=1&&wd<=5&&aS&&aS!==ab.sun){ ab.wd=aS; val.wd=styleAttr(xml,"C"+r); break; } } // 빨강(휴일) 아닌 평일
+  return {ab,val};
+}
 
+function detectCapacity(xml){ // 합계(SUM) 수식이 처음 나오는 행 = 데이터 영역 끝. 블랭크 행에 영향 안 받음
+  for(let r=FIRST_ROW;r<FIRST_ROW+45;r++){
+    const raw=cellRaw(xml,"C"+r);
+    if(raw && raw.includes("<f")) return r-FIRST_ROW; // 첫 수식 행 직전까지가 데이터 행
+  }
+  return 0;
+}
 function patchSheet(xml,y,m,days){
+  const cap=detectCapacity(xml);
+  if(cap<28) throw new Error(`마스터의 일별 데이터 행을 찾지 못했습니다(감지 ${cap}행). 올바른 업무현황 마스터인지 확인하세요.`);
+  if(days.length>cap) throw new Error(`이 마스터는 ${cap}일 레이아웃이라 ${m}월(${days.length}일)을 담을 수 없습니다. 31일 레이아웃 마스터(가장 최근 31일 달의 마스터)를 사용하세요.`);
   // 제목
   xml = inlineStr(xml,"A1",`${y}년 ${m}월`);
+  const C=harvestColors(xml,cap); // {ab:{sat,sun,wd}, val:{sat,sun,wd}}
   const INPUT_COLS=["C","D","E","F","G","H","I","J","K","L","M","N","O","P","Q","R","S","T","U","V","W","X","Y","Z"];
-  for(let i=0;i<31;i++){
+  for(let i=0;i<cap;i++){
     const row=FIRST_ROW+i, day=days[i];
     if(day){
-      xml=inlineStr(xml,"A"+row,day.weekday);
-      xml=num(xml,"B"+row,day.serial);
-      INPUT_COLS.forEach(c=>{ xml=num(xml,c+row,day.v[c]||0); });
+      const abS=C.ab[day.cat], vS=C.val[day.cat]; // 요일·공휴일에 맞는 색
+      xml=inlineStr(xml,"A"+row,day.weekday,abS);
+      xml=num(xml,"B"+row,day.serial,abS);
+      INPUT_COLS.forEach(c=>{ xml=num(xml,c+row,day.v[c]||0,vS); });
     }else{ // 미사용 행: 총건수(AA)까지 비워 평균 왜곡 방지
       ["A","B",...INPUT_COLS,"AA"].forEach(c=>{ xml=blank(xml,c+row); });
     }
@@ -349,6 +378,24 @@ async function rollBiyul(zip,S,label){
 }
 
 
+/* ---------- 월 제목 라벨 갱신 (업무통계/통계파일용) ---------- */
+function parseSharedStrings(xml){ const arr=[]; xml.replace(/<si>([\s\S]*?)<\/si>/g,(_,inner)=>{ const t=[...inner.matchAll(/<t[^>]*>([^<]*)<\/t>/g)].map(x=>unesc(x[1])).join(""); arr.push(t); return _; }); return arr; }
+function unesc(s){ return String(s).replace(/&lt;/g,"<").replace(/&gt;/g,">").replace(/&quot;/g,'"').replace(/&apos;/g,"'").replace(/&amp;/g,"&"); }
+function cellTextSync(xml,coord,ss){ const raw=cellRaw(xml,coord); if(!raw) return null;
+  if(/t="inlineStr"/.test(raw)){ const m=raw.match(/<t[^>]*>([^<]*)<\/t>/); return m?unesc(m[1]):""; }
+  if(/t="s"/.test(raw)){ const v=raw.match(/<v>(\d+)<\/v>/); return (v&&ss[Number(v[1])]!=null)?ss[Number(v[1])]:null; }
+  const v=raw.match(/<v>([^<]*)<\/v>/); return v?unesc(v[1]):null; }
+async function updateMonthLabels(zip,S,y,m){
+  let ss=[]; const f=zip.file("xl/sharedStrings.xml"); if(f) ss=parseSharedStrings(await f.async("string"));
+  const targets=[["업무통계",["A1","A2"]],["통계파일용",["B2","C2"]]];
+  for(const [name,coords] of targets){ if(!S[name])continue; let sx=await zip.file(S[name]).async("string"); let changed=false;
+    for(const co of coords){ const t=cellTextSync(sx,co,ss); if(t==null)continue;
+      const nt=t.replace(/\d{4}\s*년/g,`${y}년`).replace(/\d+\s*월/g,`${m}월`);
+      if(nt!==t){ sx=inlineStr(sx,co,nt); changed=true; } }
+    if(changed) zip.file(S[name],sx);
+  }
+}
+
 /* ---------- 생성 ---------- */
 async function generate(){
   clearLog();
@@ -368,7 +415,8 @@ async function generate(){
 
   // 1) 일별 채우기
   let sheet=await zip.file(S["일별"]).async("string");
-  sheet=patchSheet(sheet,y,m,days);
+  try{ sheet=patchSheet(sheet,y,m,days); }
+  catch(err){ log("· "+esc(err.message),"e"); log("<b>중단됨.</b> 파일을 만들지 않았습니다.","e"); return; }
   zip.file(S["일별"],sheet);
 
   // 2) history 롤링 (지난달 → 한 칸 위로, 맨아래 라이브)
@@ -381,7 +429,8 @@ async function generate(){
     zip.file(S[cfg.sheet],sx); rolled++;
   }
   const biyul=await rollBiyul(zip,S,monthLabel);
-  log(`· history 롤링: 월평균추이·점유율1·점유율2 ${rolled}시트 + 전월대비(비율누적) ${biyul?"갱신":"건너뜀"}`,"s");
+  await updateMonthLabels(zip,S,y,m);
+  log(`· history 롤링: 월평균추이·점유율1·점유율2 ${rolled}시트 + 전월대비(비율누적) ${biyul?"갱신":"건너뜀"} + 월 제목 갱신`,"s");
 
   // 3) 열 때 자동 재계산
   let wbx=await zip.file("xl/workbook.xml").async("string");
