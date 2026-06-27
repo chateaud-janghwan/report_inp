@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>병동조제실 업무현황 생성기</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@latest/dist/web/static/pretendard.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+  :root{
+    --bg:#F2F4F6; --card:#FFFFFF; --ink:#191F28; --sub:#8B95A1; --muted:#8B95A1; --line:#E5E8EB;
+    --blue:#3182F6; --blue-press:#1B64DA; --blue-soft:#E8F1FE; --red:#F04452;
+    --radius:20px;
+    --sans:'Pretendard','Pretendard Variable',-apple-system,BlinkMacSystemFont,system-ui,'Apple SD Gothic Neo','Malgun Gothic',sans-serif;
+    --mono:'SF Mono',ui-monospace,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);
+    line-height:1.5;-webkit-font-smoothing:antialiased;padding:30px 16px 100px;letter-spacing:-0.01em}
+  .wrap{max-width:500px;margin:0 auto}
+  header{padding:6px 4px 2px}
+  .eyebrow{font-size:13px;font-weight:700;color:var(--blue);margin:0 0 8px}
+  h1{font-size:26px;font-weight:800;letter-spacing:-0.03em;margin:0 0 4px;line-height:1.25}
+  .lede{color:var(--sub);margin:0;font-size:15px}
+  .card{background:var(--card);border-radius:var(--radius);padding:20px;margin-top:14px;
+    box-shadow:0 1px 2px rgba(0,0,0,.03),0 4px 16px rgba(17,24,39,.04)}
+  .step{display:flex;align-items:flex-start;gap:10px;margin:0 0 16px}
+  .step .n{font-size:13px;font-weight:800;color:#fff;background:var(--blue);border-radius:50%;
+    width:24px;height:24px;display:grid;place-items:center;flex:none;margin-top:1px}
+  .step h2{font-size:17px;font-weight:700;margin:0;letter-spacing:-0.02em}
+  .step p{font-size:13.5px;color:var(--sub);margin:3px 0 0;line-height:1.45}
+  .step>div{min-width:0}
+
+  .drop{display:grid;place-items:center;min-height:128px;padding:18px;border:0;border-radius:16px;
+    background:#F7F9FB;text-align:center;cursor:pointer;transition:background .15s,transform .12s,box-shadow .15s}
+  .drop:hover,.drop.over{background:var(--blue-soft);transform:translateY(-1px);box-shadow:0 6px 18px rgba(49,130,246,.15)}
+  .drop strong{display:block;font-size:15.5px;font-weight:700;color:var(--ink)}
+  .drop small{margin-top:6px;font-size:13px;color:var(--sub);line-height:1.4}
+  .drop input{display:none}
+  .drop-icon{display:grid;place-items:center;width:44px;height:44px;margin-bottom:10px;border-radius:14px;
+    background:var(--blue);color:#fff;font-size:26px;line-height:1;box-shadow:0 4px 12px rgba(49,130,246,.3)}
+
+  .intake{margin-top:14px;display:grid;gap:8px}
+  .slot{display:flex;align-items:center;gap:12px;padding:13px 14px;border-radius:14px;background:#F7F9FB;transition:background .15s}
+  .slot.ok{background:var(--blue-soft)}
+  .dot{width:22px;height:22px;border-radius:50%;background:#D7DCE0;flex:none;position:relative;transition:background .15s}
+  .slot.ok .dot{background:var(--blue)}
+  .slot.ok .dot::after{content:"";position:absolute;left:7px;top:4px;width:5px;height:9px;border:solid #fff;border-width:0 2px 2px 0;transform:rotate(45deg)}
+  .slot .name{font-weight:600;font-size:14.5px}
+  .slot .meta{margin-left:auto;font-size:13px;color:var(--sub);font-weight:600}
+  .slot.ok .meta{color:var(--blue)}
+
+  .detected{font-size:28px;font-weight:800;color:var(--ink);letter-spacing:-0.03em;padding:6px 0 2px}
+  .detected.empty{color:var(--sub);font-size:15px;font-weight:600}
+  .nonwork{margin-top:16px}
+  .fld{display:block;font-size:13px;color:var(--sub);font-weight:600;margin-bottom:8px}
+  .chips{display:flex;flex-wrap:wrap;gap:6px}
+  .chip{font-size:13px;font-weight:600;padding:6px 12px;border-radius:999px;background:var(--blue-soft);color:var(--blue)}
+
+  .go{margin-top:18px;width:100%;font-family:inherit;font-size:16px;font-weight:700;color:#fff;background:var(--blue);
+    border:none;border-radius:16px;padding:17px;cursor:pointer;letter-spacing:-0.01em;transition:background .15s,transform .08s}
+  .go:hover:not(:disabled){background:var(--blue-press)}
+  .go:active:not(:disabled){transform:scale(.99)}
+  .go:disabled{background:#E5E8EB;color:#B0B8C1;cursor:not-allowed}
+
+  .log{font-family:var(--mono);font-size:12.5px;color:var(--sub);margin-top:14px;white-space:pre-wrap;line-height:1.7;padding:0 4px}
+  .log b{color:var(--ink);font-weight:700} .log .e{color:var(--red)} .log .s{color:var(--blue)}
+  .sig{margin-top:18px;text-align:right;font-family:var(--mono);font-size:11px;color:#B0B8C1;padding-right:4px}
+  code{font-family:var(--mono);background:#F2F4F6;border-radius:5px;padding:1px 5px;font-size:.92em}
+
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <p class="eyebrow">병동조제실 · 월간 집계</p>
+    <h1>업무현황 파일 생성기</h1>
+  </header>
+
+  <section class="card" id="tplCard">
+    <div class="step"><span class="n">1</span><div><h2>지난달 마스터 파일 올리기</h2>
+      <p>이어서 갱신할 가장 최근 업무현황 .xlsx (예: 6월을 만들려면 5월 마스터). 이 파일을 바탕으로 새 달을 채우고 12개월 추이·전월대비를 한 칸 굴립니다.</p></div></div>
+    <label class="drop" id="tplDrop">
+      <span class="drop-icon" aria-hidden="true">+</span>
+      <strong>마스터 .xlsx 선택 또는 드롭</strong>
+      <small id="tplState">아직 안 올림</small>
+      <input type="file" id="tplInput" accept=".xlsx"></label>
+  </section>
+
+  <section class="card">
+    <div class="step"><span class="n">2</span><div><h2>원본 파일 7개 떨어뜨리기</h2>
+      <p>정규 · 추가 · 응급약 · 응급실 퇴원약 · 퇴원약 · 외박약 · 마약 (.xls). 파일명으로 자동 분류됩니다.</p></div></div>
+    <label class="drop" id="rawDrop">
+      <span class="drop-icon" aria-hidden="true">+</span>
+      <strong>엑셀 파일 선택 또는 드롭</strong>
+      <small>.xls, .xlsx 파일을 브라우저에서 바로 분석합니다.</small>
+      <input type="file" id="rawInput" accept=".xls,.xlsx" multiple></label>
+    <div class="intake" id="intake"></div>
+  </section>
+
+  <section class="card">
+    <div class="step"><span class="n">3</span><div><h2>대상 월</h2>
+      <p>올린 파일에서 자동으로 판별합니다.</p></div></div>
+    <div class="detected empty" id="detected">파일을 올리면 판별됩니다</div>
+    <div class="nonwork"><label class="fld">비근무일 자동 감지 <span style="font-weight:400">(15시 추가 없는 날 → ER 주간 입력)</span></label>
+      <div class="chips" id="chips"><span style="font-size:13px;color:var(--muted)">추가 파일을 올리면 표시됩니다</span></div></div>
+  </section>
+
+  <button class="go" id="go" disabled>업무현황 파일 만들기</button>
+  <div class="log" id="log"></div>
+  <div class="sig">chateaud.</div>
+</div>
+
+<script>
+"use strict";
+const TEMPLATE_B64 = ""; // 임베드 안 함 — 매달 지난달 마스터를 드롭받음
+
+const SHEET = "xl/worksheets/sheet2.xml"; // 일별 시트
+const FIRST_ROW = 4;                       // 입력 첫 행
+const COL = {정규:"C",추가:["D","E","F","G","H","I","J","K","L","M","N","O"], 6:"P",
+  응급주:"Q",응급야:"R",퇴원주:"S",퇴원야:"T",ER주:"U",ER야:"V",외박주:"W",외박야:"X",마약:"Y",야간외래:"Z"};
+const HOURS = ["08시","09시","10시","11시","12시","14시","15시","16시","18시","20시","22시","24시"]; // → D~O
+const WD = ["일","월","화","수","목","금","토"];
+
+const CATS = ["정규","추가","응급약","응급실퇴원약","퇴원약","외박약","마약"];
+const LABEL = {정규:"정규",추가:"추가",응급약:"응급약",응급실퇴원약:"응급실 퇴원약 (ER)",퇴원약:"퇴원약 (병동)",외박약:"외박약",마약:"마약"};
+const store = {};            // cat -> rows[]
+let templateBytes = null;
+let target = null;            // {y,m} 자동 판별 결과
+
+/* ---------- 유틸 ---------- */
+const $=id=>document.getElementById(id);
+const logEl=$("log");
+function log(msg,cls){ logEl.innerHTML += `<span class="${cls||''}">${msg}</span>\n`; }
+function clearLog(){ logEl.innerHTML=""; }
+const toInt=v=>{ if(v==null||v==="")return 0; const n=Number(String(v).replace(/[^0-9.-]/g,"")); return isNaN(n)?0:n; };
+// 날짜키: 정수 20260501 / 문자열 "2026-05-01" / Date 모두 YYYYMMDD 정수로
+function dateKey(v){
+  if(v==null||v==="") return 0;
+  if(v instanceof Date) return v.getUTCFullYear()*10000+(v.getUTCMonth()+1)*100+v.getUTCDate();
+  const digits=String(v).replace(/[^0-9]/g,"");
+  return digits.length>=8 ? Number(digits.slice(0,8)) : (Number(digits)||0);
+}
+const esc=s=>String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+function serial(y,m,d){ return Math.round((Date.UTC(y,m-1,d)-Date.UTC(1899,11,30))/86400000); }
+function weekday(y,m,d){ return WD[new Date(Date.UTC(y,m-1,d)).getUTCDay()]; }
+function daysInMonth(y,m){ return new Date(Date.UTC(y,m,0)).getUTCDate(); }
+
+function classify(name){
+  if(name.includes("응급실퇴원약")||name.includes("응급실 퇴원약")||(name.includes("응급실")&&name.includes("퇴원"))) return "응급실퇴원약";
+  if(name.includes("응급약")) return "응급약";
+  if(name.includes("퇴원약")) return "퇴원약";
+  if(name.includes("외박")) return "외박약";
+  if(name.includes("정규")) return "정규";
+  if(name.includes("추가")) return "추가";
+  if(name.includes("마약")) return "마약";
+  return null;
+}
+
+/* ---------- 템플릿 로드 ---------- */
+function b64ToBytes(b64){ const bin=atob(b64); const a=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++)a[i]=bin.charCodeAt(i); return a; }
+async function initTemplate(){ if(TEMPLATE_B64 && TEMPLATE_B64.length>100) templateBytes=b64ToBytes(TEMPLATE_B64); }
+
+/* ---------- 파일 읽기 ---------- */
+async function readXls(file){
+  const data=new Uint8Array(await file.arrayBuffer());
+  const wb=XLSX.read(data,{type:"array"});
+  const ws=wb.Sheets[wb.SheetNames[0]];
+  const rows=XLSX.utils.sheet_to_json(ws,{defval:null});
+  // 컬럼명 정규화: '집계일자*' → '집계일자'
+  return rows.map(r=>{ const o={}; for(const k in r) o[String(k).replace(/\*/g,"").trim()]=r[k]; return o; });
+}
+async function ingest(files){
+  for(const f of files){
+    const cat=classify(f.name);
+    if(!cat){ log(`· 인식 못함: ${esc(f.name)}`,"e"); continue; }
+    try{ store[cat]=await readXls(f); log(`· ${LABEL[cat]} ← ${esc(f.name)} (${store[cat].length}행)`,"s"); }
+    catch(e){ log(`· ${LABEL[cat]} 읽기 실패: ${esc(e.message)}`,"e"); }
+  }
+  renderIntake(); detectMonth(); renderNonwork(); updateGo();
+}
+
+/* ---------- 화면 갱신 ---------- */
+function renderIntake(){
+  $("intake").innerHTML = CATS.map(c=>{
+    const has=store[c]; const cls=has?"ok":"";
+    const meta=has?`${has.length}행`:"대기";
+    return `<div class="slot ${cls}"><span class="dot"></span><span class="name">${LABEL[c]}</span>
+      <span class="meta">${meta}</span></div>`;
+  }).join("");
+}
+function dateKeysOf(cat,field){ const out=[]; (store[cat]||[]).forEach(r=>{const v=dateKey(r[field]); if(v>1e7)out.push(v);}); return out; }
+function detectMonth(){
+  const tally={};
+  const add=(cat,field)=>dateKeysOf(cat,field).forEach(k=>{const ym=Math.floor(k/100);(tally[ym]=tally[ym]||new Set()).add(k%100);});
+  if(store["추가"]) add("추가","집계일자"); else if(store["정규"]) add("정규","처방일자");
+  let best=null,score=-1;
+  for(const ym in tally){ const y=Math.floor(ym/100), m=ym%100, n=tally[ym].size;
+    const s=n+(n===daysInMonth(y,m)?100:0); // 완전히 채워진 달 우선
+    if(s>score){score=s;best={y,m};} }
+  target=best;
+  const el=$("detected");
+  if(target){ el.textContent=`${target.y}년 ${target.m}월`; el.classList.remove("empty"); }
+  else{ el.textContent="파일을 올리면 판별됩니다"; el.classList.add("empty"); }
+}
+function nonWorkingDays(y,m){
+  // 15시 추가(외래 연동) 일별 건수
+  const h15={};
+  (store["추가"]||[]).forEach(r=>{ if(String(r["시간대"]).trim()==="15시"){
+    const k=dateKey(r["집계일자"]); if(k>1e7 && Math.floor(k/100)===y*100+m){ const d=k%100; h15[d]=(h15[d]||0)+toInt(r["건수"]); } } });
+  const nw=[];
+  for(let d=1;d<=daysInMonth(y,m);d++){
+    const wd=new Date(Date.UTC(y,m-1,d)).getUTCDay(); // 0=일,6=토
+    if(wd===0||wd===6||(h15[d]||0)<=5) nw.push(d); // 주말 또는 15시 거의 없음(자투리 무시)
+  }
+  return nw;
+}
+function renderNonwork(){
+  if(!target||!store["추가"]){ return; }
+  const {y,m}=target;
+  const nw=nonWorkingDays(y,m);
+  $("chips").innerHTML = nw.length
+    ? nw.map(d=>`<span class="chip">${m}/${d} ${weekday(y,m,d)}</span>`).join("")
+    : `<span style="font-size:13px;color:var(--muted)">감지된 비근무일 없음</span>`;
+}
+function updateGo(){
+  const need=["정규","추가","응급약","응급실퇴원약","퇴원약","외박약","마약"];
+  const ready = templateBytes && target && need.every(c=>store[c]);
+  $("go").disabled = !ready;
+}
+
+/* ---------- 집계 ---------- */
+function sumBy(cat,dateField,key,pred){
+  let s=0; (store[cat]||[]).forEach(r=>{ if(dateKey(r[dateField])===key && (!pred||pred(r))) s+=toInt(r["건수"]); }); return s;
+}
+function countBy(cat,dateField,key){ // 행 수 (마약: 집계일자별 건수)
+  let n=0; (store[cat]||[]).forEach(r=>{ if(dateKey(r[dateField])===key) n++; }); return n;
+}
+const isDay=r=>String(r["시간대"]).trim()==="주간";
+const isNight=r=>String(r["시간대"]).trim().startsWith("야간");
+
+function buildMonth(y,m){
+  const nd=daysInMonth(y,m), nw=new Set(nonWorkingDays(y,m));
+  const days=[];
+  for(let d=1;d<=nd;d++){
+    const key=y*10000+m*100+d, next=serialToKey(y,m,d,1);
+    const v={};
+    v["C"]=sumBy("정규","처방일자",key);
+    HOURS.forEach((h,i)=>{ v[COL.추가[i]]=sumBy("추가","집계일자",key,r=>String(r["시간대"]).trim()===h); });
+    v["P"]=sumBy("추가","집계일자",next,r=>String(r["시간대"]).trim()==="06시");
+    v["Q"]=sumBy("응급약","집계일자",key,isDay);
+    v["R"]=sumBy("응급약","집계일자",key,isNight);
+    v["S"]=sumBy("퇴원약","집계일자",key,isDay);
+    v["T"]=sumBy("퇴원약","집계일자",key,isNight);
+    v["U"]=nw.has(d)? sumBy("응급실퇴원약","집계일자",key,isDay) : 0;
+    v["V"]=sumBy("응급실퇴원약","집계일자",key,isNight);
+    v["W"]=sumBy("외박약","집계일자",key,isDay);
+    v["X"]=sumBy("외박약","집계일자",key,isNight);
+    v["Y"]=countBy("마약","집계일자",key);
+    v["Z"]=0;
+    if(nw.has(d)){ v["E"]=0; v["J"]=0; } // 비근무일: 외래 연동 09시·15시 자투리 0 처리
+    days.push({d,weekday:weekday(y,m,d),serial:serial(y,m,d),v});
+  }
+  return days;
+}
+function serialToKey(y,m,d,add){ const dt=new Date(Date.UTC(y,m-1,d+add)); return dt.getUTCFullYear()*10000+(dt.getUTCMonth()+1)*100+dt.getUTCDate(); }
+
+/* ---------- XML 패치 ---------- */
+function styleOf(xml,coord){ const m=xml.match(new RegExp(`<c r="${coord}"([^>]*?)/?>`)); if(!m)return"";
+  const s=m[1].match(/s="(\d+)"/); return s?` s="${s[1]}"`:""; }
+function setCell(xml,coord,inner){ // inner: full <c ...>...</c> 문자열
+  const re=new RegExp(`<c r="${coord}"(?:[^>]*?/>|[^>]*?>(?:(?!</c>).)*?</c>)`);
+  return re.test(xml)? xml.replace(re,inner) : xml;
+}
+function num(xml,coord,val){ return setCell(xml,coord,`<c r="${coord}"${styleOf(xml,coord)}><v>${val}</v></c>`); }
+function inlineStr(xml,coord,txt){ return setCell(xml,coord,`<c r="${coord}"${styleOf(xml,coord)} t="inlineStr"><is><t>${esc(txt)}</t></is></c>`); }
+function blank(xml,coord){ return setCell(xml,coord,`<c r="${coord}"${styleOf(xml,coord)}/>`); }
+
+function patchSheet(xml,y,m,days){
+  // 제목
+  xml = inlineStr(xml,"A1",`${y}년 ${m}월`);
+  const INPUT_COLS=["C","D","E","F","G","H","I","J","K","L","M","N","O","P","Q","R","S","T","U","V","W","X","Y","Z"];
+  for(let i=0;i<31;i++){
+    const row=FIRST_ROW+i, day=days[i];
+    if(day){
+      xml=inlineStr(xml,"A"+row,day.weekday);
+      xml=num(xml,"B"+row,day.serial);
+      INPUT_COLS.forEach(c=>{ xml=num(xml,c+row,day.v[c]||0); });
+    }else{ // 미사용 행: 총건수(AA)까지 비워 평균 왜곡 방지
+      ["A","B",...INPUT_COLS,"AA"].forEach(c=>{ xml=blank(xml,c+row); });
+    }
+  }
+  return xml;
+}
+function patchWorkbook(xml){
+  if(/<calcPr[^>]*>/.test(xml))
+    return xml.replace(/<calcPr([^>]*?)\/>/,(mm,g)=> g.includes("fullCalcOnLoad")?mm:`<calcPr${g} fullCalcOnLoad="1"/>`);
+  return xml.replace(/<\/workbook>/,'<calcPr fullCalcOnLoad="1"/></workbook>');
+}
+
+/* ---------- history 롤링 ---------- */
+// 시트 이름 -> xl/worksheets/sheetN.xml 해석
+async function resolveSheets(zip){
+  const wbx=await zip.file("xl/workbook.xml").async("string");
+  const rels=await zip.file("xl/_rels/workbook.xml.rels").async("string");
+  const relmap={};
+  rels.replace(/<Relationship\b[^>]*>/g,tag=>{ const id=(tag.match(/Id="([^"]+)"/)||[])[1], t=(tag.match(/Target="([^"]+)"/)||[])[1]; if(id&&t)relmap[id]=t; return tag; });
+  const map={};
+  wbx.replace(/<sheet\b[^>]*>/g,tag=>{ const name=(tag.match(/name="([^"]+)"/)||[])[1], rid=(tag.match(/r:id="([^"]+)"/)||[])[1];
+    if(name&&rid&&relmap[rid]){ let t=relmap[rid].replace(/^\//,""); if(!t.startsWith("xl/"))t="xl/"+t; map[name]=t; } return tag; });
+  return map;
+}
+function cellRaw(xml,coord){ const m=xml.match(new RegExp(`<c r="${coord}"(?:[^>]*?/>|[^>]*?>(?:(?!</c>).)*?</c>)`)); return m?m[0]:null; }
+function cellVstr(xml,coord){ const r=cellRaw(xml,coord); const v=r&&r.match(/<v>([^<]*)<\/v>/); return v?v[1]:null; } // 캐시 값 문자열
+// 12개월 롤링 표: 아래 행을 위로 한 칸씩(값=지난달), 맨아래 라이브 행은 안 건드림, 맨아래 라벨=이번달
+function rollTable(xml,top,bottom,vcols,label){
+  const sl={}, sv={};
+  for(let r=top+1;r<=bottom;r++){ sl[r]=cellRaw(xml,"A"+r); vcols.forEach(c=>sv[c+r]=cellVstr(xml,c+r)); }
+  for(let r=top;r<bottom;r++){
+    if(sl[r+1]) xml=setCell(xml,"A"+r, sl[r+1].replace(/^<c r="A\d+"/,`<c r="A${r}"`));
+    vcols.forEach(c=>{ const val=sv[c+(r+1)], st=styleOf(xml,c+r);
+      xml=setCell(xml,c+r, val!=null?`<c r="${c+r}"${st}><v>${val}</v></c>`:`<c r="${c+r}"${st}/>`); });
+  }
+  return inlineStr(xml,"A"+bottom,label);
+}
+const ROLL_CFG=[
+  {sheet:"월평균추이", tables:[[2,13,["B","C","D","E","F","G","H","I","J","K","L"]]]},
+  {sheet:"점유율1",   tables:[[50,61,["B","C","D","E"]]]},
+  {sheet:"점유율2",   tables:[[3,14,["B","C","D"]],[18,29,["B","C"]]]},
+];
+// 비율 누적: 통계파일용 D가 가리키는 활성 블록을 제자리 갱신 (C ← 지난달 캐시 F, F는 라이브 유지)
+async function rollBiyul(zip,S,label){
+  try{
+    if(!S["통계파일용"]||!S["비율 누적"]) return false;
+    const stat=await zip.file(S["통계파일용"]).async("string");
+    const d3=cellRaw(stat,"D3"); const mref=d3&&d3.match(/!I(\d+)/); if(!mref) return false;
+    const start=parseInt(mref[1],10); const labelRow=start-1;
+    let bx=await zip.file(S["비율 누적"]).async("string");
+    // C열 ← 캐시 F열 값(지난달)
+    for(let r=start;r<start+14;r++){ const fv=cellVstr(bx,"F"+r); if(fv!=null){ const st=styleOf(bx,"C"+r); bx=setCell(bx,"C"+r,`<c r="C${r}"${st}><v>${fv}</v></c>`); } }
+    // 라벨: C ← 기존 F 텍스트, F ← 이번달
+    const fLab=cellRaw(bx,"F"+labelRow);
+    if(fLab) bx=setCell(bx,"C"+labelRow, fLab.replace(/^<c r="F\d+"/,`<c r="C${labelRow}"`));
+    bx=inlineStr(bx,"F"+labelRow,label);
+    zip.file(S["비율 누적"],bx);
+    return true;
+  }catch(e){ return false; }
+}
+
+
+/* ---------- 생성 ---------- */
+async function generate(){
+  clearLog();
+  const {y,m}=target;
+  log(`<b>${y}년 ${m}월</b> 생성 시작…`);
+  const missing=["정규","추가","응급약","응급실퇴원약","퇴원약","외박약"].filter(c=>!store[c]);
+  if(missing.length) log(`· 누락 파일: ${missing.map(c=>LABEL[c]).join(", ")} → 해당 항목 0 처리`,"e");
+  if(!store["마약"]) log(`· 마약 파일 없음 → 마약 0 처리`,"e");
+
+  const days=buildMonth(y,m);
+  const total=days.reduce((s,d)=>s+Object.values(d.v).reduce((a,b)=>a+b,0),0);
+  log(`· ${days.length}일 집계, 총 처방건수 합 ${total.toLocaleString()}건`,"s");
+
+  const zip=await JSZip.loadAsync(templateBytes);
+  const S=await resolveSheets(zip);
+  if(!S["일별"]){ log("· 마스터에서 '일별' 시트를 찾지 못했습니다. 올바른 마스터 파일인지 확인하세요.","e"); return; }
+
+  // 1) 일별 채우기
+  let sheet=await zip.file(S["일별"]).async("string");
+  sheet=patchSheet(sheet,y,m,days);
+  zip.file(S["일별"],sheet);
+
+  // 2) history 롤링 (지난달 → 한 칸 위로, 맨아래 라이브)
+  const monthLabel=`${m}월`;
+  let rolled=0;
+  for(const cfg of ROLL_CFG){
+    if(!S[cfg.sheet]){ log(`· '${cfg.sheet}' 시트 없음 → 롤링 건너뜀`,"e"); continue; }
+    let sx=await zip.file(S[cfg.sheet]).async("string");
+    for(const [t,b,vc] of cfg.tables) sx=rollTable(sx,t,b,vc,monthLabel);
+    zip.file(S[cfg.sheet],sx); rolled++;
+  }
+  const biyul=await rollBiyul(zip,S,monthLabel);
+  log(`· history 롤링: 월평균추이·점유율1·점유율2 ${rolled}시트 + 전월대비(비율누적) ${biyul?"갱신":"건너뜀"}`,"s");
+
+  // 3) 열 때 자동 재계산
+  let wbx=await zip.file("xl/workbook.xml").async("string");
+  zip.file("xl/workbook.xml",patchWorkbook(wbx));
+
+  const blob=await zip.generateAsync({type:"blob",
+    mimeType:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",compression:"DEFLATE"});
+  const fname=`업무현황_${y}${String(m).padStart(2,"0")}.xlsx`;
+  const url=URL.createObjectURL(blob); const a=document.createElement("a");
+  a.href=url; a.download=fname; a.click(); URL.revokeObjectURL(url);
+  log(`<b>완료.</b> ${fname} 내려받음. 엑셀에서 열면 일별·차트·전월대비·12개월 추이가 자동 갱신됩니다.`,"s");
+}
+
+/* ---------- 드롭/입력 바인딩 ---------- */
+function wireDrop(zoneId,inputId,handler){
+  const z=$(zoneId),inp=$(inputId);
+  z.addEventListener("click",()=>inp.click());
+  inp.addEventListener("change",e=>handler([...e.target.files]));
+  ["dragenter","dragover"].forEach(ev=>z.addEventListener(ev,e=>{e.preventDefault();z.classList.add("over");}));
+  ["dragleave","drop"].forEach(ev=>z.addEventListener(ev,e=>{e.preventDefault();z.classList.remove("over");}));
+  z.addEventListener("drop",e=>handler([...e.dataTransfer.files]));
+}
+wireDrop("rawDrop","rawInput",ingest);
+wireDrop("tplDrop","tplInput",async files=>{
+  templateBytes=new Uint8Array(await files[0].arrayBuffer());
+  $("tplState").textContent=`불러옴: ${files[0].name}`;
+  updateGo();
+});
+$("go").addEventListener("click",generate);
+
+renderIntake();
+initTemplate().then(updateGo);
+</script>
+</body>
+</html>
