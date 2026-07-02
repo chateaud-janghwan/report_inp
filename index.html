@@ -84,7 +84,7 @@
 <div class="wrap">
   <header>
     <p class="eyebrow">병동조제실 · 월간 집계</p>
-    <h1>업무현황 파일 생성기 <span style="font-size:.45em;font-weight:600;color:var(--muted,#8a8f98);vertical-align:middle">v2.7</span></h1>
+    <h1>업무현황 파일 생성기 <span style="font-size:.45em;font-weight:600;color:var(--muted,#8a8f98);vertical-align:middle">v3.0</span></h1>
   </header>
 
   <section class="card" id="tplCard">
@@ -213,6 +213,20 @@ function detectMonth(){
   if(target){ el.textContent=`${target.y}년 ${target.m}월`; el.classList.remove("empty"); }
   else{ el.textContent="파일을 올리면 판별됩니다"; el.classList.add("empty"); }
 }
+// 공휴일: 외부 캘린더(date.nager.at — 무료·키불요·CORS허용, 설·추석·대체공휴일 포함)에서 연도별 로드. 표시 전용, 집계엔 영향 없음.
+const holidayCache={};
+async function loadHolidays(y){
+  if(holidayCache[y]) return holidayCache[y];
+  try{
+    const r=await fetch(`https://date.nager.at/api/v3/PublicHolidays/${y}/KR`);
+    if(!r.ok) throw new Error(r.status);
+    const js=await r.json();
+    holidayCache[y]=new Set(js.filter(h=>(h.types||[]).includes("Public")).map(h=>h.date)); // 법정공휴일(Public)만
+  }catch(e){ holidayCache[y]=new Set(); }                             // 실패 시 빈 세트(토요일 공휴일 표시만 생략)
+  return holidayCache[y];
+}
+function isHoliday(y,m,d){ const s=holidayCache[y];
+  return s?s.has(`${y}-${String(m).padStart(2,"0")}-${String(d).padStart(2,"0")}`):false; }
 function nonWorkingDays(y,m){
   // 15시 추가(외래 연동) 일별 건수
   const h15={};
@@ -230,8 +244,10 @@ function renderNonwork(){
   const {y,m}=target;
   const nw=nonWorkingDays(y,m);
   $("chips").innerHTML = nw.length
-    ? nw.map(d=>{const wd=weekday(y,m,d); return `<span class="chip${wd!=="토"?" red":""}">${m}/${d} ${wd}</span>`;}).join("")
+    ? nw.map(d=>{const wd=weekday(y,m,d), hol=isHoliday(y,m,d);
+        return `<span class="chip${(wd!=="토"||hol)?" red":""}">${m}/${d} ${wd}${hol?"·공휴일":""}</span>`;}).join("")
     : `<span style="font-size:13px;color:var(--muted)">감지된 비근무일 없음</span>`;
+  if(!holidayCache[y]) loadHolidays(y).then(renderNonwork);           // 캘린더 도착하면 색 갱신(1회)
 }
 function updateGo(){
   const need=["정규","추가","응급약","응급실퇴원약","퇴원약","외박약","마약"];
@@ -667,7 +683,7 @@ async function appendMultiChart(zip,info){
 async function generate(){
   clearLog();
   const {y,m}=target;
-  log(`<b>${y}년 ${m}월</b> 생성 시작… <span style="opacity:.55">(앱 v2.7)</span>`);
+  log(`<b>${y}년 ${m}월</b> 생성 시작… <span style="opacity:.55">(앱 v3.0)</span>`);
   const missing=["정규","추가","응급약","응급실퇴원약","퇴원약","외박약"].filter(c=>!store[c]);
   if(missing.length) log(`· 누락 파일: ${missing.map(c=>LABEL[c]).join(", ")} → 해당 항목 0 처리`,"e");
   if(!store["마약"]) log(`· 마약 파일 없음 → 마약 0 처리`,"e");
