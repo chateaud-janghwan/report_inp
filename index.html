@@ -84,7 +84,7 @@
 <div class="wrap">
   <header>
     <p class="eyebrow">병동조제실 · 월간 집계</p>
-    <h1>업무현황 파일 생성기</h1>
+    <h1>업무현황 파일 생성기 <span style="font-size:.45em;font-weight:600;color:var(--muted,#8a8f98);vertical-align:middle">v2.7</span></h1>
   </header>
 
   <section class="card" id="tplCard">
@@ -284,6 +284,9 @@ function setCell(xml,coord,inner){ // inner: full <c ...>...</c> 문자열
   const re=new RegExp(`<c r="${coord}"(?:[^>]*?/>|[^>]*?>(?:(?!</c>).)*?</c>)`);
   return re.test(xml)? xml.replace(re,inner) : xml;
 }
+function withCache(xml,coord,val){ // 수식 셀에 캐시값 주입/교체 (미리보기·보호된보기에서도 값 표시)
+  return xml.replace(new RegExp(`(<c r="${coord}"[^>]*>)(<f[^>]*>[^<]*</f>)(<v>[^<]*</v>)?`),(m,a,f)=>`${a}${f}<v>${val}</v>`);
+}
 function num(xml,coord,val,s){ const st=s?` s="${s}"`:styleOf(xml,coord); return setCell(xml,coord,`<c r="${coord}"${st}><v>${val}</v></c>`); }
 function inlineStr(xml,coord,txt,s){ const st=s?` s="${s}"`:styleOf(xml,coord); return setCell(xml,coord,`<c r="${coord}"${st} t="inlineStr"><is><t>${esc(txt)}</t></is></c>`); }
 function blank(xml,coord){ return setCell(xml,coord,`<c r="${coord}"${styleOf(xml,coord)}/>`); }
@@ -332,7 +335,7 @@ function emitCell(col,oldr,newr,attr,inner,cap,N,aggMode){
     return `<c r="${nc}"${s}/>`;
   }
   const fm=inner.match(/<f[^>]*>([^<]*)<\/f>/);
-  if(fm && fm[1]) return `<c r="${nc}"${s}><f>${shiftRefs(fm[1],cap,N)}</f></c>`;
+  if(fm && fm[1]){ const cv=inner.match(/<\/f><v>([^<]*)<\/v>/); return `<c r="${nc}"${s}><f>${shiftRefs(fm[1],cap,N)}</f>${cv?`<v>${cv[1]}</v>`:""}</c>`; }
   if(inner.includes('<f t="shared"')) return `<c r="${nc}"${s}/>`; // 요약영역엔 합계/평균 외 공유수식 없음
   const v=inner.match(/<v>([^<]*)<\/v>/), t=attr.match(/t="[^"]*"/);
   if(v) return `<c r="${nc}"${s}${t?" "+t[0]:""}><v>${v[1]}</v></c>`;
@@ -436,43 +439,67 @@ async function rollBiyul(zip,S,prevStatsF,curStats,N,prevLabel,curLabel,nextLabe
           sF=styleOf(bx,"F"+srcStart),sH=styleOf(bx,"H"+srcStart),sI=styleOf(bx,"I"+srcStart),
           sHC=styleOf(bx,"C"+srcHeader),sHF=styleOf(bx,"F"+srcHeader);
     const lab=(col,i,r,st)=>(cellRaw(bx,col+(srcStart+i))||`<c r="${col}${srcStart+i}"${st}/>`).replace(`"${col}${srcStart+i}"`,`"${col}${r}"`);
-    const I_ROWS=new Set([0,9,13]);                                        // 증감률(I)은 주간정규일·야간er퇴원일·총처방매수에만 (원본 규칙)
+    const I_ROWS=new Set([0,1,2,3,4,5,6,7,8,9,10,11,12,13]);               // 증감률(I) 14행 전부 — 원작자 초기 방식 복원(통계파일용 전월대비가 재계산 후에도 살아있게)
     const metricRow=(r,cInner,fInner,i)=>`<row r="${r}">${lab("B",i,r,sB)}<c r="C${r}"${sC}>${cInner}</c>${lab("E",i,r,sE)}<c r="F${r}"${sF}>${fInner}</c>${lab("H",i,r,sH)}${I_ROWS.has(i)?`<c r="I${r}"${sI}><f>((F${r}/C${r})-1)</f></c>`:""}</row>`;
     const freezeF=(h)=>{ let n=0; for(let i=0;i<14;i++){ const r=h+1+i, raw=cellRaw(bx,"F"+r);
       if(raw&&raw.includes("<f")){ let fv=cellVstr(bx,"F"+r);
         if(fv==null&&prevStatsF&&prevStatsF[i]!=null) fv=prevStatsF[i];    // 캐시 없으면(미저장 생성파일) 마스터 일별 통계로 동결
         if(fv==null&&psCLabel===prevLabel) fv=cellVstr(bx,"C"+(psStart+i)); // 최후: 선준비 C(=지난달 통계 동결값)
         bx=setCell(bx,"F"+r, fv!=null?`<c r="F${r}"${styleOf(bx,"F"+r)}><v>${fv}</v></c>`:`<c r="F${r}"${styleOf(bx,"F"+r)}/>`); n++; } } return n; };
-    let activeHeader, froze=0;
+    let activeHeader, froze=0; const actC=[];                              // actC: 활성블록 C값(통계파일용 캐시용)
+    const fixSpans=a=>/spans="/.test(a)?a.replace(/spans="[^"]*"/,'spans="2:9"'):` spans="2:9"`+a;
     if(prestaged){
       froze=freezeF(srcHeader);                                            // 직전 완전블록 동결
       activeHeader=psHeader;
-      const cHdr=cellRaw(bx,"C"+psHeader)||`<c r="C${psHeader}"${sHC} t="inlineStr"><is><t>${esc(prevLabel)}</t></is></c>`;
-      bx=bx.replace(new RegExp(`<row r="${psHeader}"[^>]*>[\\s\\S]*?</row>`),
-        `<row r="${psHeader}">${cHdr}<c r="F${psHeader}"${sHF} t="inlineStr"><is><t>${esc(curLabel)}</t></is></c></row>`);
+      // 헤더: 행은 보존, E(빈 스타일셀)·F(라벨) 셀 보강
+      if(cellRaw(bx,"F"+psHeader)){ bx=setCell(bx,"F"+psHeader,`<c r="F${psHeader}"${styleOf(bx,"F"+psHeader)||sHF} t="inlineStr"><is><t>${esc(curLabel)}</t></is></c>`);
+        if(!cellRaw(bx,"E"+psHeader)) bx=bx.replace(new RegExp(`(<row r="${psHeader}"[^>]*>[\\s\\S]*?)(<c r="F${psHeader}")`),`$1<c r="E${psHeader}"${sE}/>$2`); }
+      else { const hm=bx.match(new RegExp(`<row r="${psHeader}"([^>]*)>([\\s\\S]*?)</row>`));
+        if(hm){ const eC=cellRaw(bx,"E"+psHeader)?"":`<c r="E${psHeader}"${sE}/>`;
+          bx=bx.replace(hm[0],`<row r="${psHeader}"${fixSpans(hm[1])}>${hm[2]}${eC}<c r="F${psHeader}"${sHF} t="inlineStr"><is><t>${esc(curLabel)}</t></is></c></row>`); } }
       for(let i=0;i<14;i++){ const r=psStart+i;
-        const cv = (prevStatsF&&prevStatsF[i]!=null)?prevStatsF[i]:cellVstr(bx,"C"+r);   // C=마스터 일별 통계(수동입력 반영), 없으면 기존값
-        bx=bx.replace(new RegExp(`<row r="${r}"[^>]*>[\\s\\S]*?</row>`), metricRow(r, cv!=null?`<v>${cv}</v>`:"", `<f>일별!F${18+N+i}</f>`, i)); }
+        const rm=bx.match(new RegExp(`<row r="${r}"([^>]*)>`)); const attrs=fixSpans(rm?rm[1]:"");
+        const exB=cellRaw(bx,"B"+r)||lab("B",i,r,sB), exE=cellRaw(bx,"E"+r)||lab("E",i,r,sE), exH=cellRaw(bx,"H"+r)||lab("H",i,r,sH);
+        const cSt=styleOf(bx,"C"+r)||sC, fSt=styleOf(bx,"F"+r)||sF;         // 기존 스타일 보존, 없으면 소스블록 스타일
+        const cv=(prevStatsF&&prevStatsF[i]!=null)?prevStatsF[i]:cellVstr(bx,"C"+r); actC[i]=cv;
+        const fCa=(curStats&&curStats[i]!=null)?`<v>${curStats[i]}</v>`:"";
+        const ic=(curStats&&curStats[i]!=null&&cv!=null&&+cv!==0)?`<v>${(curStats[i]/+cv)-1}</v>`:"";
+        const iCell=`<c r="I${r}"${sI}><f>((F${r}/C${r})-1)</f>${ic}</c>`;
+        bx=bx.replace(new RegExp(`<row r="${r}"[^>]*>[\\s\\S]*?</row>`),
+          `<row r="${r}"${attrs}>${exB}<c r="C${r}"${cSt}>${cv!=null?`<v>${cv}</v>`:""}</c>${exE}<c r="F${r}"${fSt}><f>일별!F${18+N+i}</f>${fCa}</c>${exH}${iCell}</row>`); }
     } else {
       activeHeader=psHeader+17;                                            // 폴백: 선준비 없으면 새 완전블록
       froze=freezeF(psHeader);
-      let blk=`<row r="${activeHeader}"><c r="C${activeHeader}"${sHC} t="inlineStr"><is><t>${esc(prevLabel)}</t></is></c><c r="F${activeHeader}"${sHF} t="inlineStr"><is><t>${esc(curLabel)}</t></is></c></row>`;
-      for(let i=0;i<14;i++){ const r=activeHeader+1+i, cv=prevStatsF[i]; blk+=metricRow(r, cv!=null?`<v>${cv}</v>`:"", `<f>일별!F${18+N+i}</f>`, i); }
+      const rowAttrs=(rr)=>{const m=bx.match(new RegExp(`<row r="${rr}"([^>]*)>`));return fixSpans(m?m[1]:"");};
+      let blk=`<row r="${activeHeader}"${rowAttrs(srcHeader)}><c r="C${activeHeader}"${sHC} t="inlineStr"><is><t>${esc(prevLabel)}</t></is></c><c r="E${activeHeader}"${sE}/><c r="F${activeHeader}"${sHF} t="inlineStr"><is><t>${esc(curLabel)}</t></is></c></row>`;
+      for(let i=0;i<14;i++){ const r=activeHeader+1+i, cv=prevStatsF[i]; actC[i]=cv;
+        const fCa=(curStats&&curStats[i]!=null)?`<v>${curStats[i]}</v>`:"";
+        const ic=(curStats&&curStats[i]!=null&&cv!=null&&+cv!==0)?`<v>${(curStats[i]/+cv)-1}</v>`:"";
+        const iCell=`<c r="I${r}"${sI}><f>((F${r}/C${r})-1)</f>${ic}</c>`;
+        blk+=`<row r="${r}"${rowAttrs(srcHeader+1+i)}>${lab("B",i,r,sB)}<c r="C${r}"${sC}>${cv!=null?`<v>${cv}</v>`:""}</c>${lab("E",i,r,sE)}<c r="F${r}"${sF}><f>일별!F${18+N+i}</f>${fCa}</c>${lab("H",i,r,sH)}${iCell}</row>`; }
       bx=bx.replace("</sheetData>",blk+"</sheetData>");
     }
-    // 다음달 블록 선준비 (활성블록 17행 아래 복사 형태): 헤더=이번달/다음달, C=이번달 값(동결), F=17행 밀린 라이브 참조, I=[1,10,14]
+    // 다음달 블록 선준비: 방금 활성화한 블록(17행 위)을 그대로 복사하는 형태 — 라벨·스타일도 활성블록에서 복제
     const nh=activeHeader+17, ns=nh+1;
-    let pre=`<row r="${nh}"><c r="C${nh}"${sHC} t="inlineStr"><is><t>${esc(curLabel)}</t></is></c><c r="F${nh}"${sHF} t="inlineStr"><is><t>${esc(nextLabel)}</t></is></c></row>`;
-    for(let i=0;i<14;i++){ const r=ns+i, cv=curStats[i]; pre+=metricRow(r, cv!=null?`<v>${cv}</v>`:"", `<f>일별!F${18+N+17+i}</f>`, i); }
+    const rowAttrs2=(rr)=>{const m=bx.match(new RegExp(`<row r="${rr}"([^>]*)>`));return fixSpans(m?m[1]:"");};
+    const pLab=(col,i,r)=>{const s0=cellRaw(bx,col+(activeHeader+1+i)); return s0?s0.replace(`"${col}${activeHeader+1+i}"`,`"${col}${r}"`):lab(col,i,r,styleOf(bx,col+srcStart)); };
+    const pSt=(col,i,fb)=>styleOf(bx,col+(activeHeader+1+i))||fb;
+    const hSt=(col,fb)=>styleOf(bx,col+activeHeader)||fb;
+    let pre=`<row r="${nh}"${rowAttrs2(activeHeader)}><c r="C${nh}"${hSt("C",sHC)} t="inlineStr"><is><t>${esc(curLabel)}</t></is></c><c r="E${nh}"${hSt("E",sE)}/><c r="F${nh}"${hSt("F",sHF)} t="inlineStr"><is><t>${esc(nextLabel)}</t></is></c></row>`;
+    for(let i=0;i<14;i++){ const r=ns+i, cv=curStats[i];
+      const iCell=`<c r="I${r}"${pSt("I",i,sI)}><f>((F${r}/C${r})-1)</f><v>-1</v></c>`;
+      pre+=`<row r="${r}"${rowAttrs2(activeHeader+1+i)}>${pLab("B",i,r)}<c r="C${r}"${pSt("C",i,sC)}>${cv!=null?`<v>${cv}</v>`:""}</c>${pLab("E",i,r)}<c r="F${r}"${pSt("F",i,sF)}><f>일별!F${18+N+17+i}</f><v>0</v></c>${pLab("H",i,r)}${iCell}</row>`; }
     bx=bx.replace("</sheetData>",pre+"</sheetData>");
     bx=bx.replace(/<dimension ref="([A-Z]+\d+:[A-Z]+)(\d+)"\/>/,(mm,a,d)=>`<dimension ref="${a}${Math.max(+d,ns+13)}"/>`);
     zip.file(S["비율 누적"],bx);
-    if(S["통계파일용"]){ let stat=await zip.file(S["통계파일용"]).async("string");   // D3~D16 전부 새 활성블록으로 전진
+    if(S["통계파일용"]){ let stat=await zip.file(S["통계파일용"]).async("string");   // D3~D16 전부 새 활성블록으로 전진 + 캐시
       for(let i=0;i<14;i++){
-        stat=stat.replace(new RegExp(`(<c r="D${3+i}"[^>]*><f>'비율 누적'!I)\\d+(</f>)(<v>[^<]*</v>)?`), `$1${activeHeader+1+i}$2`);
+        let ca=0;
+        if(curStats&&curStats[i]!=null&&actC[i]!=null&&+actC[i]!==0) ca=(curStats[i]/+actC[i])-1;
+        stat=stat.replace(new RegExp(`(<c r="D${3+i}"[^>]*><f>'비율 누적'!I)\\d+(</f>)(<v>[^<]*</v>)?`), `$1${activeHeader+1+i}$2<v>${ca}</v>`);
       }
       zip.file(S["통계파일용"],stat); }
-    return {activeStart:activeHeader+1,froze,prestaged};
+    return {activeStart:activeHeader+1,froze,prestaged,actC};
   }catch(e){ return false; }
 }
 
@@ -517,22 +544,29 @@ async function appendMultiWeekend(zip,S,y,m,days){
       const pd=y*10000+m*100+dayNum, by={};
       (store["정규"]||[]).forEach(rr=>{ if(dateKey(rr["처방일자"])===pd){ const a=dateKey(rr["집계일자"]); by[a]=(by[a]||0)+toInt(rr["건수"]); } });
       const ks=Object.keys(by).map(Number).sort((a,b)=>a-b), n=ks.length;
-      if(n>=2){ const G=by[ks[n-1]], C=by[ks[0]]; filled.push({row:r,wd:d.weekday,n});
-        if(n>=3){ const E=ks.slice(1,n-1).reduce((s,k)=>s+by[k],0);
-          cells+=`<c r="C${r}" s="189"><v>${C}</v></c><c r="D${r}" s="190"><f>C${r}/H${r}</f></c><c r="E${r}" s="191"><v>${E}</v></c><c r="F${r}" s="190"><f>E${r}/H${r}</f></c><c r="G${r}" s="191"><v>${G}</v></c><c r="H${r}" s="192"><f>C${r}+E${r}+G${r}</f></c>`;
-        } else {
-          cells+=`<c r="C${r}" s="198"><v>${C}</v></c><c r="D${r}" s="199"><f>C${r}/H${r}</f></c><c r="E${r}" s="202"/><c r="F${r}" s="203"/><c r="G${r}" s="200"><v>${G}</v></c><c r="H${r}" s="201"><f>C${r}+G${r}</f></c>`;
+      if(n>=2){ const G=by[ks[n-1]], C=by[ks[0]];
+        if(n>=3){ const E=ks.slice(1,n-1).reduce((s,k)=>s+by[k],0), H=C+E+G, dd=C/H, ff=E/H;
+          filled.push({row:r,wd:d.weekday,n,d:dd,f2:ff});
+          cells+=`<c r="C${r}" s="189"><v>${C}</v></c><c r="D${r}" s="190"><f>C${r}/H${r}</f><v>${dd}</v></c><c r="E${r}" s="191"><v>${E}</v></c><c r="F${r}" s="190"><f>E${r}/H${r}</f><v>${ff}</v></c><c r="G${r}" s="191"><v>${G}</v></c><c r="H${r}" s="192"><f>C${r}+E${r}+G${r}</f><v>${H}</v></c>`;
+        } else { const H=C+G, dd=C/H;
+          filled.push({row:r,wd:d.weekday,n,d:dd,f2:null});
+          cells+=`<c r="C${r}" s="198"><v>${C}</v></c><c r="D${r}" s="199"><f>C${r}/H${r}</f><v>${dd}</v></c><c r="E${r}" s="202"/><c r="F${r}" s="203"/><c r="G${r}" s="200"><v>${G}</v></c><c r="H${r}" s="201"><f>C${r}+G${r}</f><v>${H}</v></c>`;
         }
       }
     }
     dailyCells.push(cells);
   }
   // 일자 루프 종료 후 J~V 표 작성 (이때 filled 완성됨)
-  const sat=filled.filter(f=>f.wd==="토").map(f=>f.row), sun=filled.filter(f=>f.wd==="일").map(f=>f.row),
+  const sat=filled.filter(f=>f.wd==="토"), sun=filled.filter(f=>f.wd==="일"),
         hol=filled.filter(f=>f.wd!=="토"&&f.wd!=="일");
-  const avg=a=>a.length?`<f>AVERAGE(${a.join(",")})</f>`:"";
-  const jvF=[ "", avg(sat.map(r=>"D"+r)), avg(sun.map(r=>"D"+r)), avg(sun.map(r=>"F"+r)),
-              avg(hol.map(h=>h.n>=3?`(D${h.row}+F${h.row})`:`D${h.row}`)) ];
+  const avg=(refs,vals)=>{ if(!refs.length) return "";
+    const mean=vals.reduce((s,x)=>s+x,0)/vals.length;
+    return `<f>AVERAGE(${refs.join(",")})</f><v>${mean}</v>`; };
+  const jvF=[ "",
+    avg(sat.map(x=>"D"+x.row), sat.map(x=>x.d)),
+    avg(sun.map(x=>"D"+x.row), sun.map(x=>x.d)),
+    avg(sun.map(x=>"F"+x.row), sun.map(x=>x.f2||0)),
+    avg(hol.map(h=>h.n>=3?`(D${h.row}+F${h.row})`:`D${h.row}`), hol.map(h=>h.n>=3?(h.d+(h.f2||0)):h.d)) ];
   let block="";
   for(let i=0;i<N;i++){
     const r=start+i; let cells=dailyCells[i];
@@ -633,7 +667,7 @@ async function appendMultiChart(zip,info){
 async function generate(){
   clearLog();
   const {y,m}=target;
-  log(`<b>${y}년 ${m}월</b> 생성 시작…`);
+  log(`<b>${y}년 ${m}월</b> 생성 시작… <span style="opacity:.55">(앱 v2.7)</span>`);
   const missing=["정규","추가","응급약","응급실퇴원약","퇴원약","외박약"].filter(c=>!store[c]);
   if(missing.length) log(`· 누락 파일: ${missing.map(c=>LABEL[c]).join(", ")} → 해당 항목 0 처리`,"e");
   if(!store["마약"]) log(`· 마약 파일 없음 → 마약 0 처리`,"e");
@@ -705,6 +739,23 @@ async function generate(){
   const curStats = monthlyStats(days);
   const biyul=await rollBiyul(zip,S,prevStatsF,curStats,days.length,`${prevM}월`,`${m}월`,`${nextM}월`);
   await updateMonthLabels(zip,S,y,m);
+
+  // 수식 캐시 채우기: 미리보기·보호된보기에서도 값이 보이게 (엑셀은 열 때 재계산으로 덮어씀)
+  { const N=days.length;
+    let il=await zip.file(S["일별"]).async("string");
+    const colT={}; let aaT=0;
+    for(let i=0;i<N;i++){ const r=4+i, v=days[i].v; let aa=0;
+      for(const c of VCOLS){ const x=+v[c]||0; aa+=x; colT[c]=(colT[c]||0)+x; }
+      il=withCache(il,"AA"+r,aa); aaT+=aa; }
+    for(const c of VCOLS){ il=withCache(il,c+(4+N),colT[c]||0); il=withCache(il,c+(5+N),(colT[c]||0)/N); }
+    il=withCache(il,"AA"+(4+N),aaT); il=withCache(il,"AA"+(5+N),aaT/N);
+    for(let i=0;i<14;i++){ if(curStats[i]!=null){ il=withCache(il,"F"+(18+N+i),curStats[i]); il=withCache(il,"C"+(18+N+i),curStats[i]*N); } }
+    zip.file(S["일별"],il);
+    if(S["통계파일용"]){ let st=await zip.file(S["통계파일용"]).async("string");
+      for(let i=0;i<14;i++){ if(curStats[i]!=null){ st=withCache(st,"B"+(3+i),curStats[i]*N); st=withCache(st,"C"+(3+i),curStats[i]); } }
+      zip.file(S["통계파일용"],st); }
+  }
+
   log(`· history 롤링: 월평균추이·점유율1·점유율2 ${rolled}시트 + 전월대비(비율누적) ${biyul?(biyul.prestaged?`선준비 블록 활성화(${prevM}→${m}월)`:`새 블록(${prevM}→${m}월)`)+`, 직전 ${biyul.froze}칸 동결, 다음달 선준비`:"건너뜀"} + 월 제목 갱신`,"s");
 
   const multi=await appendMultiWeekend(zip,S,y,m,days);
