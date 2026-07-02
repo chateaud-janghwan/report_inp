@@ -423,27 +423,35 @@ async function rollBiyul(zip,S,prevStatsF,curStats,N,prevLabel,curLabel,nextLabe
   try{
     if(!S["비율 누적"]) return false;
     let bx=await zip.file(S["비율 누적"]).async("string");
+    let ss=[]; if(zip.file("xl/sharedStrings.xml")) ss=parseSharedStrings(await zip.file("xl/sharedStrings.xml").async("string"));
     let lastC=0; for(const m of bx.matchAll(/<c r="C(\d+)"[^>]*><v>[\d.]+<\/v>/g)){ const r=+m[1]; if(r>500&&r>lastC)lastC=r; }
     if(!lastC) return false;
     const psHeader=lastC-14, psStart=psHeader+1;
-    const prestaged=!new RegExp(`<c r="I${psStart}"[^>]*><f>`).test(bx);   // 선준비(C만, I수식 없음)?
+    // 선준비 판정: 마지막 블록 헤더 C라벨 == 지난달(마스터의 달) → 활성화 대상
+    const psCLabel=cellTextSync(bx,"C"+psHeader,ss);
+    const prestaged = psCLabel===prevLabel;
     const srcHeader = prestaged ? psHeader-17 : psHeader;                  // 라벨/스타일 소스(완전 블록)
     const srcStart=srcHeader+1;
     const sB=styleOf(bx,"B"+srcStart),sC=styleOf(bx,"C"+srcStart),sE=styleOf(bx,"E"+srcStart),
           sF=styleOf(bx,"F"+srcStart),sH=styleOf(bx,"H"+srcStart),sI=styleOf(bx,"I"+srcStart),
           sHC=styleOf(bx,"C"+srcHeader),sHF=styleOf(bx,"F"+srcHeader);
     const lab=(col,i,r,st)=>(cellRaw(bx,col+(srcStart+i))||`<c r="${col}${srcStart+i}"${st}/>`).replace(`"${col}${srcStart+i}"`,`"${col}${r}"`);
-    const metricRow=(r,cInner,fInner,i)=>`<row r="${r}">${lab("B",i,r,sB)}<c r="C${r}"${sC}>${cInner}</c>${lab("E",i,r,sE)}<c r="F${r}"${sF}>${fInner}</c>${lab("H",i,r,sH)}<c r="I${r}"${sI}><f>((F${r}/C${r})-1)</f></c></row>`;
+    const I_ROWS=new Set([0,9,13]);                                        // 증감률(I)은 주간정규일·야간er퇴원일·총처방매수에만 (원본 규칙)
+    const metricRow=(r,cInner,fInner,i)=>`<row r="${r}">${lab("B",i,r,sB)}<c r="C${r}"${sC}>${cInner}</c>${lab("E",i,r,sE)}<c r="F${r}"${sF}>${fInner}</c>${lab("H",i,r,sH)}${I_ROWS.has(i)?`<c r="I${r}"${sI}><f>((F${r}/C${r})-1)</f></c>`:""}</row>`;
     const freezeF=(h)=>{ let n=0; for(let i=0;i<14;i++){ const r=h+1+i, raw=cellRaw(bx,"F"+r);
-      if(raw&&raw.includes("<f")){ const fv=cellVstr(bx,"F"+r); bx=setCell(bx,"F"+r, fv!=null?`<c r="F${r}"${styleOf(bx,"F"+r)}><v>${fv}</v></c>`:`<c r="F${r}"${styleOf(bx,"F"+r)}/>`); n++; } } return n; };
+      if(raw&&raw.includes("<f")){ let fv=cellVstr(bx,"F"+r);
+        if(fv==null&&prevStatsF&&prevStatsF[i]!=null) fv=prevStatsF[i];    // 캐시 없으면(미저장 생성파일) 마스터 일별 통계로 동결
+        if(fv==null&&psCLabel===prevLabel) fv=cellVstr(bx,"C"+(psStart+i)); // 최후: 선준비 C(=지난달 통계 동결값)
+        bx=setCell(bx,"F"+r, fv!=null?`<c r="F${r}"${styleOf(bx,"F"+r)}><v>${fv}</v></c>`:`<c r="F${r}"${styleOf(bx,"F"+r)}/>`); n++; } } return n; };
     let activeHeader, froze=0;
     if(prestaged){
       froze=freezeF(srcHeader);                                            // 직전 완전블록 동결
       activeHeader=psHeader;
-      const cHdr=cellRaw(bx,"C"+psHeader)||`<c r="C${psHeader}"${sHC}/>`;   // 헤더 행 재구성: 기존 C + F(이번달) 추가
+      const cHdr=cellRaw(bx,"C"+psHeader)||`<c r="C${psHeader}"${sHC} t="inlineStr"><is><t>${esc(prevLabel)}</t></is></c>`;
       bx=bx.replace(new RegExp(`<row r="${psHeader}"[^>]*>[\\s\\S]*?</row>`),
         `<row r="${psHeader}">${cHdr}<c r="F${psHeader}"${sHF} t="inlineStr"><is><t>${esc(curLabel)}</t></is></c></row>`);
-      for(let i=0;i<14;i++){ const r=psStart+i, cv=cellVstr(bx,"C"+r);     // 기존 C(지난달) 유지, F/I/라벨 채워 활성화
+      for(let i=0;i<14;i++){ const r=psStart+i;
+        const cv = (prevStatsF&&prevStatsF[i]!=null)?prevStatsF[i]:cellVstr(bx,"C"+r);   // C=마스터 일별 통계(수동입력 반영), 없으면 기존값
         bx=bx.replace(new RegExp(`<row r="${r}"[^>]*>[\\s\\S]*?</row>`), metricRow(r, cv!=null?`<v>${cv}</v>`:"", `<f>일별!F${18+N+i}</f>`, i)); }
     } else {
       activeHeader=psHeader+17;                                            // 폴백: 선준비 없으면 새 완전블록
@@ -452,15 +460,17 @@ async function rollBiyul(zip,S,prevStatsF,curStats,N,prevLabel,curLabel,nextLabe
       for(let i=0;i<14;i++){ const r=activeHeader+1+i, cv=prevStatsF[i]; blk+=metricRow(r, cv!=null?`<v>${cv}</v>`:"", `<f>일별!F${18+N+i}</f>`, i); }
       bx=bx.replace("</sheetData>",blk+"</sheetData>");
     }
-    // 다음달 블록 선준비 (활성블록 17행 아래): C=이번달 값(동결), F=다음달 자리표시 라이브, 헤더=이번달/다음달
+    // 다음달 블록 선준비 (활성블록 17행 아래 복사 형태): 헤더=이번달/다음달, C=이번달 값(동결), F=17행 밀린 라이브 참조, I=[1,10,14]
     const nh=activeHeader+17, ns=nh+1;
     let pre=`<row r="${nh}"><c r="C${nh}"${sHC} t="inlineStr"><is><t>${esc(curLabel)}</t></is></c><c r="F${nh}"${sHF} t="inlineStr"><is><t>${esc(nextLabel)}</t></is></c></row>`;
     for(let i=0;i<14;i++){ const r=ns+i, cv=curStats[i]; pre+=metricRow(r, cv!=null?`<v>${cv}</v>`:"", `<f>일별!F${18+N+17+i}</f>`, i); }
     bx=bx.replace("</sheetData>",pre+"</sheetData>");
     bx=bx.replace(/<dimension ref="([A-Z]+\d+:[A-Z]+)(\d+)"\/>/,(mm,a,d)=>`<dimension ref="${a}${Math.max(+d,ns+13)}"/>`);
     zip.file(S["비율 누적"],bx);
-    if(S["통계파일용"]){ let stat=await zip.file(S["통계파일용"]).async("string");
-      stat=stat.replace(/(<c r="D3"[^>]*><f>'비율 누적'!I)\d+(<\/f>)(<v>[^<]*<\/v>)?/, `$1${activeHeader+1}$2`);
+    if(S["통계파일용"]){ let stat=await zip.file(S["통계파일용"]).async("string");   // D3~D16 전부 새 활성블록으로 전진
+      for(let i=0;i<14;i++){
+        stat=stat.replace(new RegExp(`(<c r="D${3+i}"[^>]*><f>'비율 누적'!I)\\d+(</f>)(<v>[^<]*</v>)?`), `$1${activeHeader+1+i}$2`);
+      }
       zip.file(S["통계파일용"],stat); }
     return {activeStart:activeHeader+1,froze,prestaged};
   }catch(e){ return false; }
