@@ -84,7 +84,7 @@
 <div class="wrap">
   <header>
     <p class="eyebrow">병동조제실 · 월간 집계</p>
-    <h1>업무현황 파일 생성기 <span style="font-size:.45em;font-weight:600;color:var(--muted,#8a8f98);vertical-align:middle">v3.0</span></h1>
+    <h1>업무현황 파일 생성기 <span style="font-size:.45em;font-weight:600;color:var(--muted,#8a8f98);vertical-align:middle">v3.1</span></h1>
   </header>
 
   <section class="card" id="tplCard">
@@ -286,7 +286,7 @@ function buildMonth(y,m){
     v["Z"]=0;
     if(nw.has(d)){ v["E"]=0; v["J"]=0; } // 비근무일: 외래 연동 09시·15시 자투리 0 처리
     const wdn=new Date(Date.UTC(y,m-1,d)).getUTCDay(); // 0=일..6=토
-    const cat = wdn===6 ? "sat" : ((wdn===0||nw.has(d)) ? "sun" : "wd"); // 토=파랑, 일·공휴일=빨강, 그외 검정
+    const cat = isHoliday(y,m,d) ? "sun" : (wdn===6 ? "sat" : ((wdn===0||nw.has(d)) ? "sun" : "wd")); // 공휴일=빨강(토요일이어도), 토=파랑, 일·감지휴일=빨강
     days.push({d,weekday:weekday(y,m,d),serial:serial(y,m,d),v,cat});
   }
   return days;
@@ -683,11 +683,12 @@ async function appendMultiChart(zip,info){
 async function generate(){
   clearLog();
   const {y,m}=target;
-  log(`<b>${y}년 ${m}월</b> 생성 시작… <span style="opacity:.55">(앱 v3.0)</span>`);
+  log(`<b>${y}년 ${m}월</b> 생성 시작… <span style="opacity:.55">(앱 v3.1)</span>`);
   const missing=["정규","추가","응급약","응급실퇴원약","퇴원약","외박약"].filter(c=>!store[c]);
   if(missing.length) log(`· 누락 파일: ${missing.map(c=>LABEL[c]).join(", ")} → 해당 항목 0 처리`,"e");
   if(!store["마약"]) log(`· 마약 파일 없음 → 마약 0 처리`,"e");
 
+  await loadHolidays(y);                                              // 공휴일 캘린더 확보(토요일 공휴일 빨강 표시용, 실패해도 진행)
   const days=buildMonth(y,m);
   const total=days.reduce((s,d)=>s+Object.values(d.v).reduce((a,b)=>a+b,0),0);
   log(`· ${days.length}일 집계, 총 처방건수 합 ${total.toLocaleString()}건`,"s");
