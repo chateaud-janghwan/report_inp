@@ -84,7 +84,7 @@
 <div class="wrap">
   <header>
     <p class="eyebrow">병동조제실 · 월간 집계</p>
-    <h1>업무현황 파일 생성기 <span style="font-size:.45em;font-weight:600;color:var(--muted,#8a8f98);vertical-align:middle">v3.2</span></h1>
+    <h1>업무현황 파일 생성기 <span style="font-size:.45em;font-weight:600;color:var(--muted,#8a8f98);vertical-align:middle">v3.3</span></h1>
   </header>
 
   <section class="card" id="tplCard">
@@ -315,9 +315,11 @@ function harvestColors(xml,cap){
   const ab={},val={};
   for(let i=0;i<cap;i++){ const r=FIRST_ROW+i, v=cellVstr(xml,"B"+r), ser=v!=null?Number(v):NaN; if(isNaN(ser))continue;
     const wd=wdOfSerial(ser);
-    if(wd===6&&!ab.sat){ ab.sat=styleAttr(xml,"A"+r); val.sat=styleAttr(xml,"C"+r); }
-    else if(wd===0&&!ab.sun){ ab.sun=styleAttr(xml,"A"+r); val.sun=styleAttr(xml,"C"+r); }
+    if(wd===0&&!ab.sun){ ab.sun=styleAttr(xml,"A"+r); val.sun=styleAttr(xml,"C"+r); } // 일요일 스타일 먼저 확보(공휴일 여부와 무관하게 항상 빨강)
   }
+  for(let i=0;i<cap;i++){ const r=FIRST_ROW+i, v=cellVstr(xml,"B"+r), ser=v!=null?Number(v):NaN; if(isNaN(ser))continue;
+    const wd=wdOfSerial(ser), aS=styleAttr(xml,"A"+r);
+    if(wd===6&&!ab.sat&&aS&&aS!==ab.sun){ ab.sat=aS; val.sat=styleAttr(xml,"C"+r); } } // 공휴일과 겹쳐 빨강으로 칠해진 토요일은 건너뛰고 순수 토요일(파랑)만 채택
   for(let i=0;i<cap;i++){ const r=FIRST_ROW+i, v=cellVstr(xml,"B"+r), ser=v!=null?Number(v):NaN; if(isNaN(ser))continue;
     const wd=wdOfSerial(ser), aS=styleAttr(xml,"A"+r);
     if(wd>=1&&wd<=5&&aS&&aS!==ab.sun){ ab.wd=aS; val.wd=styleAttr(xml,"C"+r); break; } } // 빨강(휴일) 아닌 평일
@@ -685,7 +687,7 @@ async function appendMultiChart(zip,info){
 async function generate(){
   clearLog();
   const {y,m}=target;
-  log(`<b>${y}년 ${m}월</b> 생성 시작… <span style="opacity:.55">(앱 v3.2)</span>`);
+  log(`<b>${y}년 ${m}월</b> 생성 시작… <span style="opacity:.55">(앱 v3.3)</span>`);
   const missing=["정규","추가","응급약","응급실퇴원약","퇴원약","외박약"].filter(c=>!store[c]);
   if(missing.length) log(`· 누락 파일: ${missing.map(c=>LABEL[c]).join(", ")} → 해당 항목 0 처리`,"e");
   if(!store["마약"]) log(`· 마약 파일 없음 → 마약 0 처리`,"e");
