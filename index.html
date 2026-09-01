@@ -84,7 +84,7 @@
 <div class="wrap">
   <header>
     <p class="eyebrow">병동조제실 · 월간 집계</p>
-    <h1>업무현황 파일 생성기 <span style="font-size:.45em;font-weight:600;color:var(--muted,#8a8f98);vertical-align:middle">v3.3</span></h1>
+    <h1>업무현황 파일 생성기 <span style="font-size:.45em;font-weight:600;color:var(--muted,#8a8f98);vertical-align:middle">v3.4</span></h1>
   </header>
 
   <section class="card" id="tplCard">
@@ -338,7 +338,11 @@ const VCOLS=["C","D","E","F","G","H","I","J","K","L","M","N","O","P","Q","R","S"
 // 일별 참조 이동: 행>=boundary면 +delta. 내부수식은 일자집계 범위끝(3+cap)→(3+N)도 확장. cross=true면 '일별!' 참조만.
 function shiftRefs(formula,cap,N,cross){
   const boundary=4+cap, delta=N-cap, oldEnd=3+cap, newEnd=3+N;
-  if(cross){ return formula.replace(/일별!(\$?[A-Z]+\$?)(\d+)/g,(mm,col,r)=>{ r=+r; return `일별!${col}${r>=boundary?r+delta:r}`; }); }
+  if(cross){ // 행 이동 후, 일자범위 끝(3+cap)→(3+N) 확장까지 반드시 같이 해야 함.
+             // 끝행은 boundary보다 작아 위 이동 대상이 아니므로, 빠뜨리면 차트가 합계행을 데이터로 물거나 마지막 날을 놓친다.
+    const f=formula.replace(/일별!(\$?[A-Z]+\$?)(\d+)/g,(mm,col,r)=>{ r=+r; return `일별!${col}${r>=boundary?r+delta:r}`; });
+    return f.replace(new RegExp(`(일별!\\$?[A-Z]+\\$?)4:(\\$?[A-Z]+\\$?)${oldEnd}(?!\\d)`,'g'),`$14:$2${newEnd}`);
+  }
   let f=formula.replace(/(\$?[A-Z]+\$?)(\d+)/g,(mm,col,r)=>{ r=+r; return `${col}${r>=boundary?r+delta:r}`; });
   f=f.replace(new RegExp(`(\\$?[A-Z]+\\$?)4:(\\$?[A-Z]+\\$?)${oldEnd}(?!\\d)`,'g'),`$14:$2${newEnd}`);
   return f;
@@ -683,11 +687,105 @@ async function appendMultiChart(zip,info){
   }catch(e){ return false; }
 }
 
+/* ---------- 복구: v3.3 이전에 만들어진 마스터의 깨진 차트 범위를 되돌린다 ----------
+   v3.2까지는 달 길이가 바뀔 때 차트의 일자범위 끝행이 따라오지 않아, 합계행(4+cap)이나
+   평균행(5+cap)까지 물고 있는 파일이 만들어졌다. 그대로 두면 delta 이동 때 한 칸씩
+   밀리기만 해서 버그가 다음 달로 계속 전파된다. 이동 전에 3+cap으로 되돌린다.       */
+async function healChartRanges(zip,S,cap){
+  const badEnds=[4+cap,5+cap], good=3+cap;
+  const fix=f=>f.replace(/(일별!\$?[A-Z]+\$?)4:(\$?[A-Z]+\$?)(\d+)(?!\d)/g,
+    (mm,a,b,r)=>badEnds.includes(+r)?`${a}4:${b}${good}`:mm);
+  let n=0;
+  for(const p of Object.keys(zip.files).filter(p=>/xl\/charts\/chart\d+\.xml$/.test(p))){
+    const cx=await zip.file(p).async("string");
+    const nx=cx.replace(/<c:f>([^<]*일별![^<]*)<\/c:f>/g,(mm,f)=>`<c:f>${fix(f)}</c:f>`);
+    if(nx!==cx){ zip.file(p,nx); n++; }
+  }
+  for(const nm in S){ if(nm==="일별") continue;
+    const sx=await zip.file(S[nm]).async("string");
+    const nx=sx.replace(/(<f[^>]*>)([^<]*일별![^<]*)(<\/f>)/g,(mm,a,f,b)=>a+fix(f)+b);
+    if(nx!==sx){ zip.file(S[nm],nx); n++; }
+  }
+  return n;
+}
+
+/* ---------- 자체검증: 완성된 zip을 열어보기 전에 규칙으로 훑는다 ----------
+   경고만 내고 생성은 막지 않는다(오탐이 있어도 업무가 멈추지 않도록).
+   반환: 경고 문자열 배열                                                      */
+async function validateOutput(zip,S,y,m,days,prevStatsF,curStats,multi){
+  const W=[], N=days.length, lastData=3+N, sumRow=4+N, avgRow=5+N;
+
+  // 1) 차트가 일별 시트의 '일자 범위'를 정확히 물고 있는지 (합계행 혼입 / 마지막 날 누락 탐지)
+  for(const p of Object.keys(zip.files).filter(p=>/xl\/charts\/chart\d+\.xml$/.test(p))){
+    const cx=await zip.file(p).async("string"), ch=p.match(/(chart\d+)/)[1];
+    for(const mm of cx.matchAll(/<c:f>([^<]*일별![^<]*)<\/c:f>/g)){
+      const rg=mm[1].match(/일별!\$?([A-Z]+)\$?(\d+):\$?([A-Z]+)\$?(\d+)/);
+      if(!rg) continue;
+      const [,c1,r1,c2,r2]=rg;
+      if(+r1!==4) continue;                       // 4행에서 시작하는 것만 일자 범위로 본다
+      if(+r2===lastData) continue;                // 정상
+      W.push(`${ch} 계열 ${c1}열: 일자 범위가 4~${r2}행 (정상은 4~${lastData}행)` +
+             (+r2===sumRow?" — <b>합계행이 데이터로 들어갑니다. 그래프 끝에 거대한 값이 솟습니다</b>"
+             :+r2===avgRow?" — <b>평균행이 데이터로 들어갑니다</b>"
+             :+r2<lastData?` — <b>마지막 ${lastData-(+r2)}일이 그래프에서 빠집니다</b>`:""));
+    }
+  }
+
+  // 2) 차트 파트 무결성 (엑셀 '복구가 필요합니다' 대화상자의 주범)
+  const ct=await zip.file("[Content_Types].xml").async("string");
+  for(const p of Object.keys(zip.files).filter(p=>/xl\/(charts|drawings)\/.+\.xml$/.test(p))){
+    if(!ct.includes(`PartName="/${p}"`) && !ct.includes(`Extension="${p.split(".").pop()}"`))
+      W.push(`${p} 가 [Content_Types].xml에 등록되지 않았습니다 (엑셀이 복구를 요구합니다)`);
+  }
+  for(const p of Object.keys(zip.files).filter(p=>/_rels\/.+\.rels$/.test(p))){
+    const rx=await zip.file(p).async("string"), base=p.replace(/_rels\/[^/]+$/,"");
+    for(const tag of rx.match(/<Relationship\b[^>]*>/g)||[]){
+      if(tag.includes('TargetMode="External"')) continue;      // 외부 링크는 파트가 아니다
+      const t=(tag.match(/Target="([^"]+)"/)||[])[1];
+      if(!t || /^[a-z]+:/i.test(t)) continue;
+      const abs=(t[0]==="/"?t.slice(1):base+t).replace(/[^/]+\/\.\.\//g,"");
+      if(!zip.file(abs)) W.push(`${p} 가 없는 파트를 가리킵니다: ${abs}`);
+    }
+  }
+
+  // 3) 일별 시트 일자 행이 실제로 N일인지
+  const il=await zip.file(S["일별"]).async("string");
+  const firstSer=days[0].serial, lastSer=days[N-1].serial;
+  if(cellVstr(il,"B4")!==String(firstSer)) W.push(`일별 B4가 ${m}월 1일(${firstSer})이 아닙니다`);
+  if(cellVstr(il,"B"+lastData)!==String(lastSer)) W.push(`일별 B${lastData}가 ${m}월 ${N}일(${lastSer})이 아닙니다`);
+  if(cellVstr(il,"B"+sumRow)!==null && +cellVstr(il,"B"+sumRow)>40000)
+    W.push(`일별 ${sumRow}행(합계행이어야 함)에 날짜가 들어 있습니다 — 행 재구성이 어긋났습니다`);
+
+  // 4) 전월 대비 급변 — 원본 7개 중 하나가 누락됐거나 잘못 분류되면 여기서 잡힌다
+  const ss=zip.file("xl/sharedStrings.xml")?parseSharedStrings(await zip.file("xl/sharedStrings.xml").async("string")):[];
+  for(let i=0;i<14;i++){
+    const cur=curStats[i], prev=prevStatsF&&prevStatsF[i]!=null?+prevStatsF[i]:null;
+    if(cur==null||prev==null||prev===0) continue;
+    const rate=(cur/prev)-1;
+    if(Math.abs(rate)>0.5){
+      const lab=cellTextSync(il,"B"+(18+N+i),ss)||`항목 ${i+1}`;
+      W.push(`${esc(lab)}: 전월 대비 ${(rate*100).toFixed(0)}% (${prev.toFixed(1)} → ${cur.toFixed(1)})` +
+             (cur===0?" — <b>값이 0입니다. 원본 파일 누락 가능성</b>":""));
+    }
+  }
+
+  // 5) multi 12개월 추이표의 이번 달 칸(V열)이 채워졌는지 — 비면 추이 그래프가 끊긴다
+  if(multi){
+    const mx=await zip.file(S["multi"]).async("string");
+    const names=["","금-토","금-일","토-일","공휴일"];
+    for(let k=1;k<=4;k++)
+      if(cellVstr(mx,"V"+(multi.jvHeader+k))===null)
+        W.push(`multi 12개월 추이표 '${names[k]}' 행의 ${m}월 값이 비었습니다` +
+               (k===4?" — 이번 달에 평일 공휴일이 없으면 정상입니다":""));
+  }
+  return W;
+}
+
 /* ---------- 생성 ---------- */
 async function generate(){
   clearLog();
   const {y,m}=target;
-  log(`<b>${y}년 ${m}월</b> 생성 시작… <span style="opacity:.55">(앱 v3.3)</span>`);
+  log(`<b>${y}년 ${m}월</b> 생성 시작… <span style="opacity:.55">(앱 v3.4)</span>`);
   const missing=["정규","추가","응급약","응급실퇴원약","퇴원약","외박약"].filter(c=>!store[c]);
   if(missing.length) log(`· 누락 파일: ${missing.map(c=>LABEL[c]).join(", ")} → 해당 항목 0 처리`,"e");
   if(!store["마약"]) log(`· 마약 파일 없음 → 마약 0 처리`,"e");
@@ -725,6 +823,10 @@ async function generate(){
   const prevStatsF=readPrevStatsF(origIlbyul,cap);  // 지난달 14개 월평균값(동결용)
   log(`· 일별 레이아웃: 마스터 ${cap}일 → ${days.length}일 (행 ${delta>0?"+"+delta:delta}${delta===0?" 변동없음":" 재배치"})`,"s");
 
+  // 1-a) v3.2 이전 버전이 남긴 깨진 차트 범위 복구 (delta 이동 전에 해야 버그 전파가 끊긴다)
+  const healed=await healChartRanges(zip,S,cap);
+  if(healed) log(`· 복구: 이전 버전이 남긴 깨진 일자범위 ${healed}곳을 4~${3+cap}행으로 되돌림`,"s");
+
   // 1-b) 마스터와 대상월 일수가 다르면, 다른 시트·차트의 모든 '일별!' 참조를 delta만큼 이동
   if(delta!==0){
     const N=days.length; let shifted=0;
@@ -733,14 +835,13 @@ async function generate(){
       const nx=sx.replace(/(<f[^>]*>)([^<]*일별![^<]*)(<\/f>)/g,(mm,a,f,b)=>a+shiftRefs(f,cap,N,true)+b);
       if(nx!==sx){ zip.file(S[nm],nx); shifted++; }
     }
-    const boundary=4+cap;
     const chartNames=Object.keys(zip.files).filter(p=>/xl\/charts\/chart\d+\.xml$/.test(p));
     let chShift=0;
     for(const p of chartNames){
       let cx=await zip.file(p).async("string");
       const nx=cx.replace(/<c:f>([^<]*)<\/c:f>/g,(mm,f)=>{
         if(!f.includes("일별!")) return mm;
-        return `<c:f>${f.replace(/(\$?[A-Z]+\$?)(\d+)/g,(x,col,r)=>{r=+r;return `${col}${r>=boundary?r+delta:r}`;})}</c:f>`;
+        return `<c:f>${shiftRefs(f,cap,N,true)}</c:f>`;   // 시트 수식과 동일 규칙(끝행 확장 포함)으로 통일
       });
       if(nx!==cx){ zip.file(p,nx); chShift++; }
     }
@@ -789,6 +890,15 @@ async function generate(){
 
   // 디렉토리 엔트리 제거(원본 구조와 동일하게 → 엑셀 복구 방지)
   Object.keys(zip.files).forEach(p=>{ if(zip.files[p].dir) delete zip.files[p]; });
+
+  // 3-b) 자체검증 — 경고만 내고 생성은 계속한다
+  let warns=[];
+  try{ warns=await validateOutput(zip,S,y,m,days,prevStatsF,curStats,multi); }
+  catch(err){ log(`· 자체검증을 실행하지 못했습니다: ${esc(err.message)}`,"e"); }
+  if(warns.length){
+    log(`· <b>자체검증 ${warns.length}건 경고</b> — 파일은 만들어집니다. 아래 항목을 엑셀에서 직접 확인하세요.`,"e");
+    warns.forEach(w=>log(`   ⚠ ${w}`,"e"));
+  } else log(`· 자체검증 통과: 차트 일자범위·파트 무결성·일별 행배치·전월대비·12개월 추이 이상 없음`,"s");
 
   const blob=await zip.generateAsync({type:"blob",
     mimeType:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",compression:"DEFLATE"});
