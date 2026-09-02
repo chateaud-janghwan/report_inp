@@ -84,7 +84,7 @@
 <div class="wrap">
   <header>
     <p class="eyebrow">병동조제실 · 월간 집계</p>
-    <h1>업무현황 파일 생성기 <span style="font-size:.45em;font-weight:600;color:var(--muted,#8a8f98);vertical-align:middle">v3.4</span></h1>
+    <h1>업무현황 파일 생성기 <span style="font-size:.45em;font-weight:600;color:var(--muted,#8a8f98);vertical-align:middle">v3.5</span></h1>
   </header>
 
   <section class="card" id="tplCard">
@@ -558,12 +558,34 @@ async function appendMultiWeekend(zip,S,y,m,days){
   const prevHeader=lastDaily-4;                       // 이전 표 헤더행
   const COLN=["K","L","M","N","O","P","Q","R","S","T","U","V"];   // 11~22
   const prevVals=r=>COLN.map(c=>cellVstr(mx,c+r));    // 이전 표 한 행의 K~V 값
+
+  /* 서식 수확: 스타일 인덱스를 하드코딩하면 안 된다.
+     엑셀이 파일을 저장하면서 styles.xml의 미사용 xf를 정리하면 그 뒤 인덱스가 통째로 밀려,
+     하드코딩된 번호가 전부 엉뚱한 서식을 가리키게 된다(실제로 v3.4까지 +1씩 밀려 있었다).
+     직전 블록에서 같은 종류의 행을 찾아 그 서식을 그대로 물려받는다. */
+  const prevRows=[];                                  // 직전 블록의 일자행들
+  for(let r=lastDaily;r>=FIRST_ROW;r--){ const v=cellVstr(mx,"B"+r); if(v==null||+v<40000) break; prevRows.unshift(r); }
+  const hasV=(r,c)=>{ const raw=cellRaw(mx,c+r); return !!(raw&&/<v>/.test(raw)); };
+  const row3=prevRows.find(r=>hasV(r,"E"));                       // 3구간(평일 집계 3회) 행
+  const row2=prevRows.find(r=>hasV(r,"C")&&!hasV(r,"E"));         // 2구간 행
+  let fellBack=0;
+  const S_=(r,c,fb)=>{ const s=r!=null&&styleAttr(mx,c+r); if(s) return s; fellBack++; return fb; };  // 못 찾으면 종전 하드코딩
+  const ST={
+    A:S_(prevRows[0],"A","239"),        B:S_(prevRows[0],"B","188"),
+    c3:S_(row3,"C","189"), d3:S_(row3,"D","190"), e3:S_(row3,"E","191"),
+    f3:S_(row3,"F","190"), g3:S_(row3,"G","191"), h3:S_(row3,"H","192"),
+    c2:S_(row2,"C","198"), d2:S_(row2,"D","199"), e2:S_(row2,"E","202"),
+    f2:S_(row2,"F","203"), g2:S_(row2,"G","200"), h2:S_(row2,"H","201"),
+    jvhJ:S_(prevHeader,"J","193"), jvhV:S_(prevHeader,"K","194"),
+    jvlJ:S_(prevHeader+1,"J","195"), jvlV:S_(prevHeader+1,"K","196"),
+  };
+
   const filled=[];                                    // {row,wd,n}
   const dailyCells=[];                                // 일자행 A~H 셀
   const JVH=start+N-5;                                // 새 J~V 표 헤더행 = 새 블록 끝5행 첫행
   for(let i=0;i<N;i++){
     const d=days[i], r=start+i, dayNum=i+1;
-    let cells=`<c r="A${r}" s="239" t="inlineStr"><is><t>${d.weekday}</t></is></c><c r="B${r}" s="188"><v>${d.serial}</v></c>`;
+    let cells=`<c r="A${r}" s="${ST.A}" t="inlineStr"><is><t>${d.weekday}</t></is></c><c r="B${r}" s="${ST.B}"><v>${d.serial}</v></c>`;
     if(d.cat!=="wd"){
       const pd=y*10000+m*100+dayNum, by={};
       (store["정규"]||[]).forEach(rr=>{ if(dateKey(rr["처방일자"])===pd){ const a=dateKey(rr["집계일자"]); by[a]=(by[a]||0)+toInt(rr["건수"]); } });
@@ -571,10 +593,10 @@ async function appendMultiWeekend(zip,S,y,m,days){
       if(n>=2){ const G=by[ks[n-1]], C=by[ks[0]];
         if(n>=3){ const E=ks.slice(1,n-1).reduce((s,k)=>s+by[k],0), H=C+E+G, dd=C/H, ff=E/H;
           filled.push({row:r,wd:d.weekday,n,d:dd,f2:ff});
-          cells+=`<c r="C${r}" s="189"><v>${C}</v></c><c r="D${r}" s="190"><f>C${r}/H${r}</f><v>${dd}</v></c><c r="E${r}" s="191"><v>${E}</v></c><c r="F${r}" s="190"><f>E${r}/H${r}</f><v>${ff}</v></c><c r="G${r}" s="191"><v>${G}</v></c><c r="H${r}" s="192"><f>C${r}+E${r}+G${r}</f><v>${H}</v></c>`;
+          cells+=`<c r="C${r}" s="${ST.c3}"><v>${C}</v></c><c r="D${r}" s="${ST.d3}"><f>C${r}/H${r}</f><v>${dd}</v></c><c r="E${r}" s="${ST.e3}"><v>${E}</v></c><c r="F${r}" s="${ST.f3}"><f>E${r}/H${r}</f><v>${ff}</v></c><c r="G${r}" s="${ST.g3}"><v>${G}</v></c><c r="H${r}" s="${ST.h3}"><f>C${r}+E${r}+G${r}</f><v>${H}</v></c>`;
         } else { const H=C+G, dd=C/H;
           filled.push({row:r,wd:d.weekday,n,d:dd,f2:null});
-          cells+=`<c r="C${r}" s="198"><v>${C}</v></c><c r="D${r}" s="199"><f>C${r}/H${r}</f><v>${dd}</v></c><c r="E${r}" s="202"/><c r="F${r}" s="203"/><c r="G${r}" s="200"><v>${G}</v></c><c r="H${r}" s="201"><f>C${r}+G${r}</f><v>${H}</v></c>`;
+          cells+=`<c r="C${r}" s="${ST.c2}"><v>${C}</v></c><c r="D${r}" s="${ST.d2}"><f>C${r}/H${r}</f><v>${dd}</v></c><c r="E${r}" s="${ST.e2}"/><c r="F${r}" s="${ST.f2}"/><c r="G${r}" s="${ST.g2}"><v>${G}</v></c><c r="H${r}" s="${ST.h2}"><f>C${r}+G${r}</f><v>${H}</v></c>`;
         }
       }
     }
@@ -595,14 +617,14 @@ async function appendMultiWeekend(zip,S,y,m,days){
   for(let i=0;i<N;i++){
     const r=start+i; let cells=dailyCells[i];
     if(r>=JVH && r<=JVH+4){ const k=r-JVH;
-      if(k===0){ cells+=`<c r="J${r}" s="193" t="inlineStr"><is><t>(%)</t></is></c>`;
-        COLN.forEach((c,o)=>{ const lab=((m+o)%12)+1; cells+=`<c r="${c}${r}" s="194" t="inlineStr"><is><t>${lab}월</t></is></c>`; });
+      if(k===0){ cells+=`<c r="J${r}" s="${ST.jvhJ}" t="inlineStr"><is><t>(%)</t></is></c>`;
+        COLN.forEach((c,o)=>{ const lab=((m+o)%12)+1; cells+=`<c r="${c}${r}" s="${ST.jvhV}" t="inlineStr"><is><t>${lab}월</t></is></c>`; });
       } else {
         const lab=["","금-토","금-일","토-일","공휴일"][k];
-        cells+=`<c r="J${r}" s="195" t="inlineStr"><is><t>${lab}</t></is></c>`;
+        cells+=`<c r="J${r}" s="${ST.jvlJ}" t="inlineStr"><is><t>${lab}</t></is></c>`;
         const pv=prevVals(prevHeader+k);
-        for(let c=0;c<11;c++){ const v=pv[c+1]; cells+=`<c r="${COLN[c]}${r}" s="196">${v!=null?`<v>${v}</v>`:""}</c>`; }
-        cells+=`<c r="V${r}" s="196">${jvF[k]}</c>`;
+        for(let c=0;c<11;c++){ const v=pv[c+1]; cells+=`<c r="${COLN[c]}${r}" s="${ST.jvlV}">${v!=null?`<v>${v}</v>`:""}</c>`; }
+        cells+=`<c r="V${r}" s="${ST.jvlV}">${jvF[k]}</c>`;
       }
     }
     block+=`<row r="${r}" spans="1:22" ht="17.25" thickBot="1" x14ac:dyDescent="0.2">${cells}</row>`;
@@ -610,7 +632,7 @@ async function appendMultiWeekend(zip,S,y,m,days){
   mx=mx.replace("</sheetData>",block+"</sheetData>");
   mx=mx.replace(/<dimension ref="([A-Z]+\d+:[A-Z]+)(\d+)"\/>/,(mm,a,d)=>`<dimension ref="${a}${Math.max(+d,start+N-1)}"/>`);
   zip.file(S["multi"],mx);
-  return {start,end:start+N-1, jvHeader:JVH, prevHeader, delta:JVH-prevHeader};
+  return {start,end:start+N-1, jvHeader:JVH, prevHeader, delta:JVH-prevHeader, styleA:ST.A, fellBack};
 }
 
 /* ---------- multi: 주말표 차트 복제 (이전달 차트 → 새 번호, 참조·앵커 delta 이동) ---------- */
@@ -773,6 +795,17 @@ async function validateOutput(zip,S,y,m,days,prevStatsF,curStats,multi){
   if(multi){
     const mx=await zip.file(S["multi"]).async("string");
     const names=["","금-토","금-일","토-일","공휴일"];
+
+    // 5-a) 새 블록의 서식이 바로 위 블록과 같은지 — 스타일 인덱스가 밀리면 여기서 잡힌다
+    const prevLast=multi.start-3;                       // 직전 블록 마지막 일자행
+    for(const col of ["A","B"]){
+      const a=styleAttr(mx,col+multi.start), b=styleAttr(mx,col+prevLast);
+      if(a&&b&&a!==b) W.push(`multi ${col}열 서식이 직전 블록과 다릅니다 (새 블록 s=${a}, 직전 s=${b}) — 새 블록만 서식이 어긋나 보입니다`);
+    }
+    for(const col of ["J","K"]){
+      const a=styleAttr(mx,col+multi.jvHeader), b=styleAttr(mx,col+multi.prevHeader);
+      if(a&&b&&a!==b) W.push(`multi 12개월 추이표 ${col}열 헤더 서식이 직전 표와 다릅니다 (${a} ≠ ${b})`);
+    }
     for(let k=1;k<=4;k++)
       if(cellVstr(mx,"V"+(multi.jvHeader+k))===null)
         W.push(`multi 12개월 추이표 '${names[k]}' 행의 ${m}월 값이 비었습니다` +
@@ -785,7 +818,7 @@ async function validateOutput(zip,S,y,m,days,prevStatsF,curStats,multi){
 async function generate(){
   clearLog();
   const {y,m}=target;
-  log(`<b>${y}년 ${m}월</b> 생성 시작… <span style="opacity:.55">(앱 v3.4)</span>`);
+  log(`<b>${y}년 ${m}월</b> 생성 시작… <span style="opacity:.55">(앱 v3.5)</span>`);
   const missing=["정규","추가","응급약","응급실퇴원약","퇴원약","외박약"].filter(c=>!store[c]);
   if(missing.length) log(`· 누락 파일: ${missing.map(c=>LABEL[c]).join(", ")} → 해당 항목 0 처리`,"e");
   if(!store["마약"]) log(`· 마약 파일 없음 → 마약 0 처리`,"e");
@@ -882,6 +915,7 @@ async function generate(){
 
   const multi=await appendMultiWeekend(zip,S,y,m,days);
   const mchart=multi?await appendMultiChart(zip,multi):false;
+  if(multi&&multi.fellBack) log(`· multi 서식: 직전 블록에서 ${multi.fellBack}개를 못 찾아 기본값 사용 → 새 블록 서식이 어긋날 수 있습니다`,"e");
   log(`· multi: 주말블록+J~V표 ${multi?`추가(${multi.start}~${multi.end}행)`:"건너뜀"}, 차트 ${mchart?`복제(${mchart.src}→${mchart.newName})`:"건너뜀/수동필요"}`,"s");
 
   // 3) 열 때 자동 재계산
